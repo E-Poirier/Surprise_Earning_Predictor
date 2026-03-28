@@ -75,8 +75,8 @@ TICKERS = [
 - **API key:** `FINNHUB_API_KEY` (never commit).
 - **Endpoints (Python client):**
   - `company_earnings(symbol, limit=40)` — historical EPS actuals, estimates, surprise %
-  - `company_eps_estimates(symbol, freq="quarterly")` — estimate trends (validate fields for revision features)
   - `company_news(symbol, _from=..., to=...)` — headlines for FinBERT
+  - *Not used:* `company_eps_estimates` — paid-tier on Finnhub; **EPS revision features are dropped** for this project.
 - **Package:** `pip install finnhub-python`
 
 ### 4.2 yfinance (supplementary)
@@ -105,8 +105,6 @@ All features are **per company-quarter**, known **before** earnings date `D`.
 
 | Feature                 | Description                                              | Source        |
 |-------------------------|----------------------------------------------------------|---------------|
-| `eps_revision_30d`      | Consensus EPS change in last 30d before earnings       | Finnhub est.  |
-| `eps_revision_60d`      | Consensus EPS change in last 60d before earnings         | Finnhub est.  |
 | `beat_rate_4q`          | Fraction of last 4 quarters beating                      | Finnhub       |
 | `beat_rate_8q`          | Fraction of last 8 quarters beating                      | Finnhub       |
 | `surprise_magnitude_avg`| Mean \|surprise %\| over last 4 quarters                 | Finnhub       |
@@ -116,7 +114,7 @@ All features are **per company-quarter**, known **before** earnings date `D`.
 | `sector`                | One-hot sector                                           | yfinance info |
 | `quarter`               | Q1–Q4 seasonality                                        | derived       |
 
-**Risk:** `eps_revision_*` needs historical estimate snapshots. **Spike on one ticker** in Phase 1; if unavailable on free tier, **drop these two** and ship beat-rates + momentum + sentiment + sector + quarter.
+**Dropped (not in model):** `eps_revision_30d` / `eps_revision_60d` — Finnhub’s EPS estimate history endpoint is not on the free tier; we do not upgrade.
 
 ### 5.2 NLP feature
 
@@ -130,7 +128,7 @@ For earnings date `D`:
 
 - Prices and returns: use data **through D−1** only.
 - News: **through D−1** only.
-- Estimates: only snapshots **before D**.
+- Consensus / estimate fields from **earnings history** only (no separate revision time series).
 - **Never** put actual EPS into features.
 
 ### 5.4 Output
@@ -266,7 +264,7 @@ Response (shape):
   "top_features": [
     { "feature": "beat_rate_8q", "value": 0.875, "direction": "positive" },
     { "feature": "sentiment_score", "value": 0.63, "direction": "positive" },
-    { "feature": "eps_revision_30d", "value": -0.02, "direction": "negative" }
+    { "feature": "momentum_60d", "value": 0.04, "direction": "positive" }
   ],
   "last_quarters": [
     {
@@ -321,7 +319,7 @@ Use this sequence when building; skip §15 items if time is short.
 | Phase | Task | Checkpoint |
 |-------|------|------------|
 | **0** | Create tree, `requirements*.txt`, `.gitignore`, `.env.example`, `config/tickers.py`, `config/config.yaml` | Config imports; ~50 tickers |
-| **1** | `src/ingestion.py` — Finnhub + yfinance, rate limits, persisted raw/processed data | One-ticker spike; revision fields validated or scoped down |
+| **1** | `src/ingestion.py` — Finnhub + yfinance, rate limits, persisted raw/processed data | One-ticker spike; full run optional |
 | **2** | `src/sentiment.py` — HF client, cache, 503 retry, 14d aggregation | Second run hits cache only |
 | **3** | `src/features.py` — PIT assembly → `data/features/features.parquet` | `test_features.py` guards lookahead |
 | **4** | `src/train.py` — time split, multiclass XGBoost + **sample weights**, save to `models/` | Val metrics; test evaluated once |
@@ -330,7 +328,7 @@ Use this sequence when building; skip §15 items if time is short.
 | **7** | `Dockerfile`, `docker-compose.yml`, `README.md` | `docker compose up` works with mounts |
 | **8** (opt) | `notebooks/eda.ipynb`, SHAP | Nice-to-have |
 
-**If blocked on estimate revisions:** drop `eps_revision_30d` / `eps_revision_60d` first; keep the rest.
+**EPS revisions:** intentionally omitted (Finnhub free tier).
 
 ---
 
@@ -339,6 +337,7 @@ Use this sequence when building; skip §15 items if time is short.
 | Decision | Why |
 |----------|-----|
 | ~50 tickers | Finnhub free tier + time |
+| No EPS revision features | Finnhub paid endpoint |
 | HF Inference (not local) | No GPU; fast to integrate |
 | FinBERT feature + XGBoost | Sentiment + tabular strengths |
 | Time split | Prevents leakage |
