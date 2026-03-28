@@ -1,5 +1,10 @@
 """Pull Finnhub + yfinance data into ``data/raw`` and ``data/processed`` (Phase 1).
 
+Earnings: Finnhub ``company_earnings`` is merged with Yahoo ``earnings_history`` when
+``ingestion.yfinance_earnings_backfill`` is true (default). Rows match on fiscal period
+date; Finnhub values take precedence on overlap. Yahoo fills history Finnhub omits on the
+free tier.
+
 Run from project root::
 
     python -m src.ingestion
@@ -20,7 +25,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -64,16 +69,224 @@ def _payload_to_dataframe(payload: Any) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def normalize_period_key(period: Any) -> str | None:
+    """Canonical ``YYYY-MM-DD`` key for merging earnings rows."""
+    if period is None or (isinstance(period, float) and pd.isna(period)):
+        return None
+    ts = pd.to_datetime(period, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.strftime("%Y-%m-%d")
+
+
+def merge_earnings_by_period(
+    preferred: list[dict[str, Any]],
+    supplemental: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge by ``period`` (``YYYY-MM-DD``); **preferred** rows win on overlap."""
+    by_period: dict[str, dict[str, Any]] = {}
+    for r in preferred:
+        if not isinstance(r, dict):
+            continue
+        p = normalize_period_key(r.get("period"))
+        if p:
+            by_period[p] = r
+    for r in supplemental:
+        if not isinstance(r, dict):
+            continue
+        p = normalize_period_key(r.get("period"))
+        if p and p not in by_period:
+            by_period[p] = r
+    return sorted(by_period.values(), key=lambda x: normalize_period_key(x.get("period")) or "")
+
+
+def merge_earnings_finnhub_yfinance(
+    finnhub_rows: list[dict[str, Any]],
+    yfinance_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Backward-compatible name for :func:`merge_earnings_by_period`."""
+    return merge_earnings_by_period(finnhub_rows, yfinance_rows)
+
+
+def _quarter_end_before_announcement(ann: pd.Timestamp | datetime | date) -> date:
+    """Most recent Mar/Jun/Sep/Dec month-end strictly before the earnings announcement date."""
+    ad = pd.Timestamp(ann).date()
+    candidates: list[date] = []
+    for y in range(ad.year - 3, ad.year + 1):
+        for m, d in ((3, 31), (6, 30), (9, 30), (12, 31)):
+            try:
+                c = date(y, m, d)
+            except ValueError:
+                continue
+            if c < ad:
+                candidates.append(c)
+    return max(candidates) if candidates else ad
+
+
+def yfinance_earnings_history_rows(yf_ticker: str, ticker: str) -> list[dict[str, Any]]:
+    """Quarterly EPS from Yahoo ``earnings_history`` (supplemental to Finnhub). Fragile — best-effort."""
+    try:
+        t = yf.Ticker(yf_ticker)
+        eh = t.earnings_history
+    except Exception as e:
+        logger.warning("yfinance earnings_history failed for %s: %s", yf_ticker, e)
+        return []
+    if eh is None or eh.empty:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for idx, row in eh.iterrows():
+        ts = pd.Timestamp(idx)
+        period_str = ts.strftime("%Y-%m-%d")
+        d = ts.date()
+        year = int(d.year)
+        quarter = int((d.month - 1) // 3 + 1)
+
+        act = row.get("epsActual")
+        est = row.get("epsEstimate")
+        sp = row.get("surprisePercent")
+        if pd.isna(act) and pd.isna(est):
+            continue
+
+        rows.append(
+            {
+                "actual": float(act) if pd.notna(act) else None,
+                "estimate": float(est) if pd.notna(est) else None,
+                "period": period_str,
+                "quarter": quarter,
+                "year": year,
+                "surprise_percent": float(sp) if pd.notna(sp) else None,
+                "symbol": ticker,
+                "_source": "yfinance_earnings_history",
+            }
+        )
+    return rows
+
+
+def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    """Historical EPS from Yahoo earnings calendar scrape (deeper than ``earnings_history``).
+
+    Maps each announcement to a fiscal **period** = last calendar quarter-end before the
+    announcement (US large-cap heuristic). Requires ``lxml`` for ``pd.read_html``.
+    """
+    try:
+        t = yf.Ticker(yf_ticker)
+        df = t.get_earnings_dates(limit=limit)
+    except ImportError as e:
+        logger.warning("yfinance earnings calendar skipped for %s (install lxml): %s", yf_ticker, e)
+        return []
+    except Exception as e:
+        logger.warning("yfinance get_earnings_dates failed for %s: %s", yf_ticker, e)
+        return []
+    if df is None or df.empty:
+        return []
+
+    df = df.sort_index(ascending=True)
+
+    def _col(row: pd.Series, *candidates: str) -> Any:
+        for c in candidates:
+            if c in row.index:
+                return row[c]
+        for c in row.index:
+            cl = str(c).lower().replace(" ", "")
+            for want in candidates:
+                if want.lower().replace(" ", "") in cl:
+                    return row[c]
+        return None
+
+    by_period: dict[str, dict[str, Any]] = {}
+    for idx, row in df.iterrows():
+        ann = pd.Timestamp(idx)
+        period_end = _quarter_end_before_announcement(ann)
+        period_str = period_end.isoformat()
+
+        rep = _col(row, "Reported EPS", "ReportedEPS")
+        est = _col(row, "EPS Estimate", "EPSEstimate")
+        sur = _col(row, "Surprise(%)", "Surprise (%)", "Surprise(%)")
+
+        if rep is None or (isinstance(rep, float) and pd.isna(rep)):
+            continue
+        try:
+            actual = float(rep)
+        except (TypeError, ValueError):
+            continue
+        estimate: float | None
+        try:
+            estimate = float(est) if est is not None and not (isinstance(est, float) and pd.isna(est)) else None
+        except (TypeError, ValueError):
+            estimate = None
+
+        sp: float | None = None
+        if sur is not None and not (isinstance(sur, float) and pd.isna(sur)):
+            try:
+                sp = float(sur)
+            except (TypeError, ValueError):
+                sp = None
+
+        year = int(period_end.year)
+        quarter = int((period_end.month - 1) // 3 + 1)
+
+        by_period[period_str] = {
+            "actual": actual,
+            "estimate": estimate,
+            "period": period_str,
+            "quarter": quarter,
+            "year": year,
+            "surprise_percent": sp,
+            "symbol": ticker,
+            "_source": "yfinance_earnings_calendar",
+        }
+    return list(by_period.values())
+
+
 def normalize_earnings_rows(rows: list[dict[str, Any]] | None) -> pd.DataFrame:
     """Standardize ``/stock/earnings`` rows for downstream features."""
     df = pd.DataFrame([] if rows is None else rows)
     if df.empty:
         return df
+    df = df.reset_index(drop=True)
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    if "period" in df.columns:
+        pk = df["period"].map(lambda x: normalize_period_key(x) or None)
+        df = df.assign(_period_key=pk).dropna(subset=["_period_key"])
+        df = df.drop_duplicates(subset=["_period_key"], keep="first").drop(columns=["_period_key"])
+    df = df.reset_index(drop=True)
     rename = {"surprisePercent": "surprise_percent"}
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    if "surprise_percent" not in df.columns:
+        df["surprise_percent"] = pd.NA
+
+    if "actual" in df.columns and "estimate" in df.columns:
+        sp = df["surprise_percent"]
+        if isinstance(sp, pd.DataFrame):
+            df["surprise_percent"] = sp.iloc[:, 0]
+            sp = df["surprise_percent"]
+        need = sp.isna().to_numpy() & df["actual"].notna().to_numpy() & df["estimate"].notna().to_numpy()
+        if need.any():
+            est = df["estimate"].astype(float)
+            ok = need & (est.abs().to_numpy() > 1e-12)
+            df.loc[ok, "surprise_percent"] = (
+                (df.loc[ok, "actual"].astype(float) - df.loc[ok, "estimate"].astype(float))
+                / df.loc[ok, "estimate"].astype(float).abs()
+                * 100.0
+            )
+
     if "year" in df.columns and "quarter" in df.columns:
         df["fiscal_label"] = df["year"].astype(str) + "-Q" + df["quarter"].astype(str)
-    return df.sort_values(["year", "quarter"], ascending=False).reset_index(drop=True)
+
+    if "period" in df.columns:
+        po = pd.to_datetime(df["period"], errors="coerce")
+        df = df.assign(_sort=po).sort_values("_sort", ascending=True).drop(columns=["_sort"])
+    elif "year" in df.columns and "quarter" in df.columns:
+        df = df.sort_values(["year", "quarter"], ascending=True)
+    df = df.reset_index(drop=True)
+
+    drop_meta = [c for c in ("_source",) if c in df.columns]
+    if drop_meta:
+        df = df.drop(columns=drop_meta)
+
+    return df
 
 
 def fetch_company_news_range(
@@ -168,6 +381,22 @@ def ingest_one_ticker(
         _sleep_after_finnhub(cfg)
         _write_json(raw_dir / f"{ticker}_earnings.json", earnings_raw)
         earnings_list = earnings_raw if isinstance(earnings_raw, list) else []
+        if ig.get("yfinance_earnings_backfill", True):
+            yf_hist = yfinance_earnings_history_rows(yf_sym, ticker)
+            cal_limit = int(ig.get("yfinance_earnings_calendar_limit", 100))
+            yf_cal = yfinance_earnings_calendar_rows(yf_sym, ticker, limit=cal_limit)
+            _write_json(raw_dir / f"{ticker}_earnings_yfinance_backfill.json", yf_hist)
+            _write_json(raw_dir / f"{ticker}_earnings_yfinance_calendar.json", yf_cal)
+            n_fh = len(earnings_list)
+            merged = merge_earnings_by_period(earnings_list, yf_hist)
+            merged = merge_earnings_by_period(merged, yf_cal)
+            earnings_list = merged
+            logger.info(
+                "%s earnings: %d Finnhub → %d after Yahoo merge (history + calendar)",
+                ticker,
+                n_fh,
+                len(earnings_list),
+            )
         earnings_df = normalize_earnings_rows(earnings_list)
         earnings_df.to_parquet(processed_dir / f"{ticker}_earnings.parquet", index=False)
 

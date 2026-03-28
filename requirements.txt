@@ -1,6 +1,7 @@
 # Core pipeline (ingestion, features, training)
 numpy>=1.24
 pandas>=2.0
+lxml>=5.0
 pyarrow>=14.0
 pyyaml>=6.0
 python-dotenv>=1.0

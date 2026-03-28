@@ -26,6 +26,10 @@ ingestion:
   company_earnings_limit: 40
   # yfinance daily history; "max" = as much as Yahoo allows
   yfinance_history_period: "max"
+  # Finnhub free tier often returns ~4 quarters; merge Yahoo earnings_history for older EPS
+  yfinance_earnings_backfill: true
+  # Yahoo calendar scrape (needs ``lxml``); adds many past quarters via get_earnings_dates
+  yfinance_earnings_calendar_limit: 100
 
 # Feature flags (Phase 3) — Finnhub /stock/eps-estimate is paid-tier; revisions dropped
 features:
