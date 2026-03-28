@@ -1,0 +1,14 @@
+# Core pipeline (ingestion, features, training)
+numpy>=1.24
+pandas>=2.0
+pyarrow>=14.0
+pyyaml>=6.0
+finnhub-python>=2.4
+yfinance>=0.2.40
+huggingface_hub>=0.24
+xgboost>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+
+# Dev
+pytest>=8.0

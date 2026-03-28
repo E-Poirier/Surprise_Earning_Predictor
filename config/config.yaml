@@ -1,0 +1,59 @@
+# Paths are relative to the project root unless absolute.
+paths:
+  data_root: data
+  raw: data/raw
+  processed: data/processed
+  features: data/features
+  features_file: data/features/features.parquet
+  sentiment_cache: data/sentiment_cache.json
+  models_dir: models
+
+# Surprise labeling: BEAT / MISS if |actual - estimate| / |estimate| > threshold; else IN_LINE
+target:
+  surprise_threshold_pct: 2.0
+
+# Time-based splits (quarter fiscal dates resolved in code using earnings calendar).
+# Train: quarters ending strictly before validation_start_quarter
+# Validation: validation_start_quarter through validation_end_quarter inclusive
+# Test: quarters starting at test_start_quarter onward
+splits:
+  validation_start_quarter: "2022-Q1"
+  validation_end_quarter: "2023-Q4"
+  test_start_quarter: "2024-Q1"
+
+# Finnhub free tier: ~60 calls/minute
+finnhub:
+  rate_limit_sleep_seconds: 1.1
+
+# News window for FinBERT aggregation (days before earnings date D; use headlines through D-1 only)
+news:
+  lookback_days: 14
+
+# Hugging Face FinBERT
+sentiment:
+  model_id: yiyanghkust/finbert-tone
+  cold_start_retry_sleep_seconds: 20
+  max_retries: 3
+  neutral_score: 0.5
+
+# XGBoost multiclass (imbalance handled via sample_weight in train.py — not scale_pos_weight)
+model:
+  xgboost:
+    objective: multi:softprob
+    num_class: 3
+    n_estimators: 300
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    random_state: 42
+    n_jobs: -1
+    eval_metric: mlogloss
+
+# API
+api:
+  model_version: v1
+
+# Label encoding: class index for XGBoost (must match API probabilities order)
+labels:
+  order: ["BEAT", "IN_LINE", "MISS"]
