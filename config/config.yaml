@@ -39,9 +39,12 @@ finnhub:
 news:
   lookback_days: 14
 
-# Hugging Face FinBERT
+# Hugging Face FinBERT (financial sentiment via Inference API)
 sentiment:
-  model_id: yiyanghkust/finbert-tone
+  # ProsusAI/finbert works on HF Inference router. yiyanghkust/finbert-tone often 400s (legacy config).
+  model_id: ProsusAI/finbert
+  # auto = omit provider; hf-inference also works for ProsusAI/finbert
+  hf_provider: auto
   cold_start_retry_sleep_seconds: 20
   max_retries: 3
   neutral_score: 0.5
