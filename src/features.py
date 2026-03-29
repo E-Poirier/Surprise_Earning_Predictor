@@ -335,6 +335,132 @@ def build_features_for_ticker(
     return rows
 
 
+def row_has_actual(row: pd.Series) -> bool:
+    """Whether the earnings row has a reported EPS actual."""
+    a = row.get("actual")
+    return a is not None and pd.notna(a)
+
+
+def row_has_estimate(row: pd.Series) -> bool:
+    """Whether the row has a consensus EPS estimate."""
+    e = row.get("estimate")
+    return e is not None and pd.notna(e)
+
+
+def find_upcoming_earnings_index(earnings: pd.DataFrame) -> int | None:
+    """Index (in period-sorted frame) of the **most recent** quarter without an actual but with an estimate.
+
+    Requires eight fully reported quarters immediately before it (same prior window as training).
+    Returns ``None`` if no such row exists.
+    """
+    if earnings.empty or len(earnings) < 9:
+        return None
+    e = earnings.copy()
+    e["_pit_order"] = pd.to_datetime(e["period"], errors="coerce")
+    e = e.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+    n = len(e)
+    for i in range(n - 1, 7, -1):
+        cur = e.iloc[i]
+        if row_has_actual(cur):
+            continue
+        if not row_has_estimate(cur):
+            continue
+        prior8 = e.iloc[i - 8 : i]
+        if len(prior8) != 8:
+            continue
+        if not all(row_has_actual(r) and row_has_estimate(r) for _, r in prior8.iterrows()):
+            continue
+        return i
+    return None
+
+
+def build_upcoming_inference_row(
+    ticker: str,
+    cfg: dict[str, Any],
+    *,
+    earnings_df: pd.DataFrame,
+    prices: pd.DataFrame,
+    sector: str,
+    sector_universe: list[str],
+    threshold_pct: float,
+    finnhub_client: finnhub.Client | None,
+    hf_client: Any,
+    sentiment_cache: SentimentCache | None,
+    skip_sentiment: bool,
+) -> tuple[dict[str, Any], int] | None:
+    """Single feature row for the **next** unreported quarter (no ``target``). Mirrors training PIT logic.
+
+    Returns ``(feature_row, sorted_row_index)`` for the upcoming quarter, or ``None`` if unavailable.
+    """
+    idx = find_upcoming_earnings_index(earnings_df)
+    if idx is None:
+        return None
+
+    earnings = earnings_df.copy()
+    earnings["_pit_order"] = pd.to_datetime(earnings["period"], errors="coerce")
+    earnings = earnings.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+
+    cur = earnings.iloc[idx]
+    prior8 = earnings.iloc[idx - 8 : idx]
+    prior4 = earnings.iloc[idx - 4 : idx]
+
+    br8 = beat_rate(prior8, threshold_pct)
+    br4 = beat_rate(prior4, threshold_pct)
+    if br8 is None or br4 is None:
+        return None
+
+    mag_vals: list[float] = []
+    for _, r in prior4.iterrows():
+        v = abs_surprise_pct(r)
+        if v is not None:
+            mag_vals.append(v)
+    if len(mag_vals) < 4:
+        return None
+    surprise_mag = float(np.mean(mag_vals))
+    mag_trend = surprise_magnitude_trend(mag_vals)
+    if mag_trend is None:
+        return None
+
+    anchor = pit_anchor_date(cur)
+    q = int(cur["quarter"]) if pd.notna(cur.get("quarter")) else 1
+
+    mom30 = momentum_calendar_return(prices, anchor, lookback_days=30)
+    mom60 = momentum_calendar_return(prices, anchor, lookback_days=60)
+    hv = hist_vol_30d(prices, anchor)
+    if mom30 is None or mom60 is None or hv is None:
+        return None
+
+    if skip_sentiment:
+        sent = float(cfg.get("sentiment", {}).get("neutral_score", 0.5))
+    else:
+        sent = _sentiment_for_row(
+            finnhub_client,
+            hf_client,
+            sentiment_cache,
+            cfg,
+            ticker,
+            anchor,
+        )
+
+    row: dict[str, Any] = {
+        "ticker": ticker,
+        "fiscal_label": str(cur.get("fiscal_label") or ""),
+        "earnings_date": anchor,
+        "beat_rate_4q": br4,
+        "beat_rate_8q": br8,
+        "surprise_magnitude_avg": surprise_mag,
+        "surprise_magnitude_trend": mag_trend,
+        "momentum_30d": mom30,
+        "momentum_60d": mom60,
+        "hist_vol_30d": hv,
+        "quarter": q,
+        "sentiment_score": sent,
+    }
+    for k, v in sector_one_hot(sector, sector_universe).items():
+        row[k] = v
+    return row, idx
+
+
 def run_feature_pipeline(
     tickers: list[str],
     *,
