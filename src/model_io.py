@@ -31,11 +31,21 @@ def load_model_bundle(
         )
     with open(meta_path, encoding="utf-8") as f:
         metadata = json.load(f)
-    model_path = Path(metadata.get("model_path", str(mdir / "xgb_classifier.joblib")))
-    if not model_path.is_absolute():
-        model_path = _PROJECT_ROOT / model_path
+    # Prefer ``models_dir/xgb_classifier.joblib`` when metadata stores a stale absolute
+    # ``model_path`` from another machine or moved checkout.
+    default_model = mdir / "xgb_classifier.joblib"
+    raw = metadata.get("model_path")
+    if raw:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = _PROJECT_ROOT / candidate
+        model_path = candidate if candidate.exists() else default_model
+    else:
+        model_path = default_model
     if not model_path.exists():
-        raise FileNotFoundError(f"Missing model file: {model_path}")
+        raise FileNotFoundError(
+            f"Missing model file (looked for {default_model} and metadata path {raw!r})"
+        )
     model = joblib.load(model_path)
     feature_columns: list[str] = list(metadata["feature_columns"])
     label_order: list[str] = list(metadata["label_order"])

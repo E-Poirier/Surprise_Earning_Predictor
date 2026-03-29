@@ -25,7 +25,12 @@ from src.features import (
     prepare_prices_df,
     surprise_label,
 )
-from src.ingestion import merge_earnings_by_period, normalize_earnings_rows
+from src.ingestion import (
+    merge_earnings_by_period,
+    normalize_earnings_rows,
+    yfinance_earnings_calendar_rows,
+    yfinance_symbol,
+)
 from src.model_io import load_model_bundle
 from src.sentiment import SentimentCache, build_inference_client
 
@@ -179,6 +184,18 @@ def predict_for_ticker(
             earnings_df = refresh_earnings_with_finnhub(ticker, earnings_df, client, cfg)
         except Exception as e:
             logger.warning("Finnhub refresh failed for %s; using on-disk earnings: %s", ticker, e)
+
+    # Match ingestion: Yahoo earnings calendar adds **future** quarters (estimate, no actual) so
+    # ``find_upcoming_earnings_index`` can resolve the next report; calendar scrape alone is not in Finnhub refresh.
+    ig = cfg.get("ingestion", {})
+    if ig.get("yfinance_earnings_backfill", True):
+        cal_limit = int(ig.get("yfinance_earnings_calendar_limit", 100))
+        try:
+            yf_cal = yfinance_earnings_calendar_rows(yfinance_symbol(ticker), ticker, limit=cal_limit)
+            merged = merge_earnings_by_period(earnings_df.to_dict("records"), yf_cal)
+            earnings_df = normalize_earnings_rows(merged)
+        except Exception as e:
+            logger.warning("Yahoo earnings calendar merge failed for %s: %s", ticker, e)
 
     prices_raw = pd.read_parquet(px_path)
     prices = prepare_prices_df(prices_raw)

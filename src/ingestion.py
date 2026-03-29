@@ -164,10 +164,11 @@ def yfinance_earnings_history_rows(yf_ticker: str, ticker: str) -> list[dict[str
 
 
 def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int = 100) -> list[dict[str, Any]]:
-    """Historical EPS from Yahoo earnings calendar scrape (deeper than ``earnings_history``).
+    """EPS rows from Yahoo ``get_earnings_dates`` (deeper than ``earnings_history``).
 
     Maps each announcement to a fiscal **period** = last calendar quarter-end before the
     announcement (US large-cap heuristic). Requires ``lxml`` for ``pd.read_html``.
+    Includes **upcoming** quarters that have an EPS estimate but no reported EPS yet.
     """
     try:
         t = yf.Ticker(yf_ticker)
@@ -194,6 +195,23 @@ def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int =
                     return row[c]
         return None
 
+    def _eps_cell_missing(v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, float) and pd.isna(v):
+            return True
+        if isinstance(v, str) and v.strip() in ("", "-", "—", "N/A", "n/a"):
+            return True
+        return False
+
+    def _eps_to_float(v: Any) -> float | None:
+        if _eps_cell_missing(v):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     by_period: dict[str, dict[str, Any]] = {}
     for idx, row in df.iterrows():
         ann = pd.Timestamp(idx)
@@ -204,17 +222,12 @@ def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int =
         est = _col(row, "EPS Estimate", "EPSEstimate")
         sur = _col(row, "Surprise(%)", "Surprise (%)", "Surprise(%)")
 
-        if rep is None or (isinstance(rep, float) and pd.isna(rep)):
+        actual = _eps_to_float(rep)
+        estimate = _eps_to_float(est)
+        # Historical rows always had reported EPS; we also need **upcoming** rows (estimate only)
+        # so inference can find a quarter without ``actual`` (see ``find_upcoming_earnings_index``).
+        if actual is None and estimate is None:
             continue
-        try:
-            actual = float(rep)
-        except (TypeError, ValueError):
-            continue
-        estimate: float | None
-        try:
-            estimate = float(est) if est is not None and not (isinstance(est, float) and pd.isna(est)) else None
-        except (TypeError, ValueError):
-            estimate = None
 
         sp: float | None = None
         if sur is not None and not (isinstance(sur, float) and pd.isna(sur)):
