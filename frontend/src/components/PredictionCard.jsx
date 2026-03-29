@@ -27,6 +27,17 @@ function pct(n) {
   return `${(n * 100).toFixed(1)}%`;
 }
 
+function formatAnchor(iso) {
+  if (!iso || typeof iso !== "string") return null;
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export default function PredictionCard({ data }) {
   if (!data) return null;
 
@@ -34,11 +45,30 @@ export default function PredictionCard({ data }) {
   const styles = labelStyles[pred] || labelStyles.IN_LINE;
   const probs = data.probabilities || {};
   const order = ["BEAT", "IN_LINE", "MISS"];
+  const fq = data.upcoming_fiscal_quarter;
+  const anchorLabel = formatAnchor(data.earnings_anchor_date);
 
   return (
     <div
       className={`rounded-2xl border ${styles.border} ${styles.bg} p-6 shadow-lg ring-1 ${styles.ring}`}
     >
+      {(fq || anchorLabel) && (
+        <p className="mb-4 text-xs leading-relaxed text-slate-400">
+          {fq && (
+            <>
+              <span className="font-medium text-slate-300">Upcoming quarter:</span>{" "}
+              <span className="font-mono text-slate-200">{fq}</span>
+            </>
+          )}
+          {fq && anchorLabel && <span className="text-slate-600"> · </span>}
+          {anchorLabel && (
+            <>
+              <span className="font-medium text-slate-300">Fiscal period end (D):</span>{" "}
+              <span className="text-slate-300">{anchorLabel}</span>
+            </>
+          )}
+        </p>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Prediction</p>

@@ -268,6 +268,15 @@ def predict_for_ticker(
     last_q = _last_quarters_table(earnings_df, upcoming_idx, threshold_pct, max_rows=4)
     price_hist = _price_history_for_chart(prices, calendar_days=90)
 
+    anchor = row_dict.get("earnings_date")
+    anchor_iso: str | None
+    if anchor is None:
+        anchor_iso = None
+    elif hasattr(anchor, "isoformat"):
+        anchor_iso = anchor.isoformat()
+    else:
+        anchor_iso = str(anchor)
+
     return {
         "ticker": ticker,
         "prediction": prediction,
@@ -275,5 +284,7 @@ def predict_for_ticker(
         "probabilities": probs,
         "top_features": top,
         "last_quarters": last_q,
+        "upcoming_fiscal_quarter": str(row_dict.get("fiscal_label") or ""),
+        "earnings_anchor_date": anchor_iso,
         "price_history": price_hist,
     }

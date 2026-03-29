@@ -44,6 +44,14 @@ class PredictResponse(BaseModel):
     probabilities: Dict[str, float]
     top_features: List[TopFeatureItem]
     last_quarters: List[LastQuarterItem]
+    upcoming_fiscal_quarter: str = Field(
+        "",
+        description="Fiscal quarter label for the upcoming EPS row (estimate vs actual not yet reported)",
+    )
+    earnings_anchor_date: Optional[str] = Field(
+        None,
+        description="Fiscal period-end date (D) used as the earnings anchor for PIT features, ISO YYYY-MM-DD",
+    )
     price_history: List[PricePoint] = Field(
         default_factory=list,
         description="Recent daily closes (up to ~90 calendar days) for charting",

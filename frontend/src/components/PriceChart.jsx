@@ -46,10 +46,29 @@ function gradientId(ticker) {
   return `priceFill-${String(ticker).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
 
+function lastCloseDateIso(points) {
+  const pts = Array.isArray(points) ? points : [];
+  if (pts.length === 0) return null;
+  return pts.reduce((best, p) => (p.date > best ? p.date : best), pts[0].date);
+}
+
+function formatAsOf(iso) {
+  if (!iso) return null;
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export default function PriceChart({ ticker, priceHistory }) {
   const [rangeId, setRangeId] = useState("1m");
   const days = RANGES.find((r) => r.id === rangeId)?.days ?? 30;
   const gid = gradientId(ticker);
+  const asOfIso = useMemo(() => lastCloseDateIso(priceHistory), [priceHistory]);
+  const asOfLabel = formatAsOf(asOfIso);
 
   const data = useMemo(() => {
     const pts = Array.isArray(priceHistory) ? priceHistory : [];
@@ -75,6 +94,13 @@ export default function PriceChart({ ticker, priceHistory }) {
           <h2 className="text-sm font-semibold text-slate-200">Price (daily close)</h2>
           <p className="mt-0.5 text-xs text-slate-500">
             Yahoo-adjusted closes from ingestion — not live.
+            {asOfLabel && (
+              <>
+                {" "}
+                <span className="text-slate-400">As of last bar:</span>{" "}
+                <span className="font-medium text-slate-300">{asOfLabel}</span>
+              </>
+            )}
           </p>
         </div>
         <div className="flex rounded-lg border border-slate-700 bg-slate-950/80 p-0.5">

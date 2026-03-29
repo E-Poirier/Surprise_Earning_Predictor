@@ -109,6 +109,8 @@ def test_predict_200_mocked(monkeypatch, client: TestClient):
                 {"date": "2024-09-01", "close": 220.0},
                 {"date": "2024-09-03", "close": 222.5},
             ],
+            "upcoming_fiscal_quarter": "2024-Q4",
+            "earnings_anchor_date": "2024-09-30",
         }
 
     monkeypatch.setattr("src.predict.predict_for_ticker", _fake_predict)
