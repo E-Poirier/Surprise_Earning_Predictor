@@ -30,6 +30,13 @@ class LastQuarterItem(BaseModel):
     label: Optional[str] = None
 
 
+class PricePoint(BaseModel):
+    """Daily close from processed Yahoo price history (UTC-stripped dates)."""
+
+    date: str
+    close: float
+
+
 class PredictResponse(BaseModel):
     ticker: str
     prediction: str
@@ -37,6 +44,10 @@ class PredictResponse(BaseModel):
     probabilities: Dict[str, float]
     top_features: List[TopFeatureItem]
     last_quarters: List[LastQuarterItem]
+    price_history: List[PricePoint] = Field(
+        default_factory=list,
+        description="Recent daily closes (up to ~90 calendar days) for charting",
+    )
 
 
 class ErrorBody(BaseModel):

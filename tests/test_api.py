@@ -105,6 +105,10 @@ def test_predict_200_mocked(monkeypatch, client: TestClient):
                     "label": "BEAT",
                 }
             ],
+            "price_history": [
+                {"date": "2024-09-01", "close": 220.0},
+                {"date": "2024-09-03", "close": 222.5},
+            ],
         }
 
     monkeypatch.setattr("src.predict.predict_for_ticker", _fake_predict)

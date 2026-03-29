@@ -107,6 +107,23 @@ def _top_features(
     return out
 
 
+def _price_history_for_chart(prices: pd.DataFrame, *, calendar_days: int = 90) -> list[dict[str, Any]]:
+    """Daily closes for the UI chart (ingestion Yahoo OHLCV, ``Close`` column)."""
+    if prices is None or prices.empty or "Close" not in prices.columns:
+        return []
+    px = prices.sort_values("date")
+    end = px["date"].max()
+    if pd.isna(end):
+        return []
+    start = end - pd.Timedelta(days=calendar_days)
+    sub = px.loc[(px["date"] >= start) & (px["date"] <= end)]
+    out: list[dict[str, Any]] = []
+    for _, r in sub.iterrows():
+        ts = pd.Timestamp(r["date"])
+        out.append({"date": ts.date().isoformat(), "close": float(r["Close"])})
+    return out
+
+
 def _last_quarters_table(
     earnings: pd.DataFrame,
     upcoming_idx: int,
@@ -249,6 +266,7 @@ def predict_for_ticker(
 
     top = _top_features(model, feature_columns, X, k=3)
     last_q = _last_quarters_table(earnings_df, upcoming_idx, threshold_pct, max_rows=4)
+    price_hist = _price_history_for_chart(prices, calendar_days=90)
 
     return {
         "ticker": ticker,
@@ -257,4 +275,5 @@ def predict_for_ticker(
         "probabilities": probs,
         "top_features": top,
         "last_quarters": last_q,
+        "price_history": price_hist,
     }

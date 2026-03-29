@@ -3,6 +3,7 @@ import { useCallback, useState } from "react";
 import { predictTicker } from "./api.js";
 import HistoryTable from "./components/HistoryTable.jsx";
 import PredictionCard from "./components/PredictionCard.jsx";
+import PriceChart from "./components/PriceChart.jsx";
 import TickerSearch from "./components/TickerSearch.jsx";
 
 function LoadingSpinner() {
@@ -107,6 +108,7 @@ export default function App() {
         {!loading && !error && result && (
           <>
             <PredictionCard data={result} />
+            <PriceChart ticker={result.ticker} priceHistory={result.price_history} />
             <HistoryTable rows={result.last_quarters} />
           </>
         )}
