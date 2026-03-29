@@ -1,0 +1,36 @@
+# Git / IDE
+.git
+.gitignore
+.cursor
+.idea
+.vscode
+
+# Python
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.coverage
+htmlcov
+*.egg-info
+
+# Frontend (rebuilt in image)
+frontend/node_modules
+frontend/dist
+
+# Data & models (mounted at runtime; keep image small)
+data/raw
+data/processed
+data/features
+data/sentiment_cache.json
+models
+
+# Docs / notebooks
+notebooks
+*.md
+!README.md
+
+# Env (inject via compose `env_file` or secrets)
+.env
+.env.*

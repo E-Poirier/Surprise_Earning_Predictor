@@ -7,6 +7,10 @@ import { defineConfig } from "vite";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 
+// Local dev: 127.0.0.1:8000. Docker Compose: set VITE_API_PROXY_TARGET=http://backend:8000
+const apiProxyTarget =
+  process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000";
+
 // Load root `.env` so `VITE_API_KEY` can sit next to `API_KEY` for local dev.
 export default defineConfig({
   plugins: [react()],
@@ -15,7 +19,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: apiProxyTarget,
         changeOrigin: true,
       },
     },

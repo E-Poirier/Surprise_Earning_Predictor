@@ -82,8 +82,9 @@ TICKERS = [
 ### 4.2 yfinance (supplementary)
 
 - Daily prices, historical vol proxy, sector/industry.
+- **Earnings calendar** (`get_earnings_dates`): merged after Finnhub in ingestion; rows may include **upcoming** quarters (**EPS estimate present, reported EPS not yet**). Those rows are required so API inference can resolve the “next” unreported quarter (see `find_upcoming_earnings_index` in `src/features.py`). `predict_core` merges the same calendar after Finnhub refresh so predictions work without re-ingesting.
 - **Fragile** (scrapes Yahoo) — wrap in try/except; acceptable for a hackathon.
-- **Do not** use yfinance for earnings numbers — use Finnhub.
+- **Do not** use yfinance for historical EPS actuals as the sole source — Finnhub leads; Yahoo backfills / calendar supplements.
 
 ### 4.3 Hugging Face — FinBERT (`yiyanghkust/finbert-tone`)
 
@@ -201,26 +202,36 @@ Surprise_Earning_Predictor/
 │   ├── sentiment.py
 │   ├── features.py
 │   ├── train.py
-│   └── predict.py
+│   ├── predict.py              # thin wrapper → predict_core
+│   ├── predict_core.py         # API inference (Finnhub refresh + calendar merge + features + model)
+│   ├── model_io.py             # load joblib + train_metadata (portable model path)
+│   └── errors.py
 ├── api/
 │   ├── main.py
 │   └── schemas.py
 ├── frontend/
+│   ├── package.json
 │   ├── src/
+│   │   ├── main.jsx
+│   │   ├── index.css          # Tailwind entry
+│   │   ├── api.js             # fetch /api/tickers, /api/predict (x-api-key from VITE_API_KEY)
 │   │   ├── App.jsx
 │   │   └── components/
 │   │       ├── TickerSearch.jsx
-│   │       ├── PredictionCard.jsx
+│   │       ├── PredictionCard.jsx   # upcoming quarter + fiscal period end (D)
+│   │       ├── PriceChart.jsx       # Recharts area chart; 1W/1M/3M; “as of” last bar
 │   │       └── HistoryTable.jsx
 │   ├── index.html
-│   └── vite.config.js       # proxy /api → backend :8000
+│   ├── vite.config.js         # proxy /api → backend :8000; envDir = repo root
+│   ├── tailwind.config.js
+│   └── postcss.config.js
 ├── notebooks/
 │   └── eda.ipynb
 ├── tests/
 │   ├── test_features.py     # point-in-time / no lookahead (required)
 │   ├── test_sentiment.py
 │   └── test_api.py
-├── .env.example             # FINNHUB_API_KEY, HF_API_KEY, API_KEY
+├── .env.example             # FINNHUB_API_KEY, HF_API_KEY, API_KEY, VITE_API_KEY (frontend dev)
 ├── .gitignore
 ├── docker-compose.yml
 ├── Dockerfile
@@ -274,22 +285,32 @@ Response (shape):
       "surprise_pct": 5.6,
       "label": "BEAT"
     }
+  ],
+  "upcoming_fiscal_quarter": "2026-Q1",
+  "earnings_anchor_date": "2025-12-31",
+  "price_history": [
+    { "date": "2025-12-01", "close": 278.12 }
   ]
 }
 ```
+
+- **`upcoming_fiscal_quarter` / `earnings_anchor_date`:** fiscal label and period-end date **D** for the row being predicted (PIT anchor).
+- **`price_history`:** ~90 calendar days of daily **Close** from processed Yahoo prices (for UI chart; not a live quote).
 
 ### 9.3 Errors
 
 - Unknown ticker → **404** `{ "error": "ticker_not_supported" }`
 - Insufficient history (for example fewer than 8 quarters) → **422** `{ "error": "insufficient_history" }`
+- Model failed to load at startup → **503** (detail string; often missing `models/` artifacts or wrong Python env without `xgboost`)
 
 ---
 
 ## 10. Frontend
 
-- Vite + React; **Tailwind** utilities only.
-- Components: `TickerSearch`, `PredictionCard`, `HistoryTable`.
-- Colors: BEAT = green, MISS = red, IN_LINE = gray; loading spinner; friendly errors.
+- Vite + React; **Tailwind** utilities for layout/typography; **Recharts** for the price series chart.
+- Components: `TickerSearch` (loads `/api/tickers` for suggestions), `PredictionCard` (probabilities, top features, **upcoming quarter + fiscal period end D**), `PriceChart` (**1W / 1M / 3M** windows, **“as of”** last daily close — not live), `HistoryTable`.
+- **Auth for predict:** set **`VITE_API_KEY`** in root `.env` to the same value as **`API_KEY`** (Vite `envDir` points at repo root). Dev server proxies `/api` → `http://127.0.0.1:8000`.
+- Colors: BEAT = green, MISS = red, IN_LINE = gray; loading spinner; friendly errors (including API **503** detail when the model is not loaded).
 
 ---
 
@@ -307,7 +328,8 @@ Response (shape):
 # .env (see .env.example)
 FINNHUB_API_KEY=...
 HF_API_KEY=...
-API_KEY=...          # FastAPI x-api-key
+API_KEY=...          # FastAPI x-api-key (server)
+VITE_API_KEY=...     # same value as API_KEY — used by Vite frontend for `x-api-key` in dev only
 ```
 
 ---
@@ -324,7 +346,7 @@ Use this sequence when building; skip §15 items if time is short.
 | **3** | `src/features.py` — PIT assembly → `data/features/features.parquet` | `test_features.py` guards lookahead |
 | **4** | `src/train.py` — time split, multiclass XGBoost + **sample weights**, save to `models/` | Val metrics; test evaluated once |
 | **5** | `api/` — health, tickers, predict + auth; `tests/test_api.py` | `curl` matches contract |
-| **6** | `frontend/` — search, card, table, proxy | End-to-end in browser |
+| **6** | `frontend/` — search, prediction card, price chart, history table, Tailwind, Vite proxy, `VITE_API_KEY` | End-to-end in browser |
 | **7** | `Dockerfile`, `docker-compose.yml`, `README.md` | `docker compose up` works with mounts |
 | **8** (opt) | `notebooks/eda.ipynb`, SHAP | Nice-to-have |
 
@@ -342,6 +364,9 @@ Use this sequence when building; skip §15 items if time is short.
 | FinBERT feature + XGBoost | Sentiment + tabular strengths |
 | Time split | Prevents leakage |
 | ±2% bands | Reduces noise labels |
+| Yahoo calendar rows without reported EPS | Needed so inference can find an “upcoming” quarter (estimate, no actual) |
+| `model_io` prefers `models/xgb_classifier.joblib` next to metadata | `train_metadata.json` may store a stale absolute `model_path` after moving the repo |
+| Predict returns `price_history` + quarter anchor fields | Single round-trip for UI chart and labels without extra endpoints |
 
 ---
 
