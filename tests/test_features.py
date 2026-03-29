@@ -18,6 +18,7 @@ from src.features import (
     prepare_prices_df,
     sector_one_hot,
     surprise_label,
+    surprise_magnitude_trend,
 )
 
 
@@ -115,6 +116,13 @@ def test_sector_one_hot():
     assert d2["sector_Unknown"] == 1.0
 
 
+def test_surprise_magnitude_trend_slope():
+    assert surprise_magnitude_trend([10.0, 10.0, 10.0, 10.0]) == pytest.approx(0.0, abs=1e-9)
+    assert surprise_magnitude_trend([1.0, 2.0, 3.0, 4.0]) == pytest.approx(1.0, abs=1e-9)
+    assert surprise_magnitude_trend([4.0, 3.0, 2.0, 1.0]) == pytest.approx(-1.0, abs=1e-9)
+    assert surprise_magnitude_trend([1.0, 2.0]) is None
+
+
 def test_abs_surprise_pct_fallback():
     row = pd.Series({"actual": 1.1, "estimate": 1.0, "surprise_percent": np.nan})
     assert abs_surprise_pct(row) == pytest.approx(10.0)
@@ -172,4 +180,5 @@ def test_build_features_for_ticker_end_to_end():
     assert row0["target"] == "BEAT"
     assert row0["beat_rate_4q"] == 1.0
     assert row0["beat_rate_8q"] == 1.0
+    assert row0["surprise_magnitude_trend"] == pytest.approx(0.0, abs=1e-6)
     assert "sector_Technology" in row0 and row0["sector_Technology"] == 1.0

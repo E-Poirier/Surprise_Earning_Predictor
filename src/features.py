@@ -84,6 +84,19 @@ def surprise_label(
     return "IN_LINE"
 
 
+def surprise_magnitude_trend(magnitudes: list[float]) -> float | None:
+    """Slope of absolute surprise percentage over prior quarters (oldest → newest), linear fit.
+
+    Uses only past quarters already in ``magnitudes`` (typically four prior rows).
+    """
+    if len(magnitudes) < 4:
+        return None
+    x = np.arange(len(magnitudes), dtype=float)
+    y = np.asarray(magnitudes, dtype=float)
+    coef = np.polyfit(x, y, 1)
+    return float(coef[0])
+
+
 def abs_surprise_pct(row: pd.Series) -> float | None:
     """|surprise %| for a history row; falls back to recomputing from actual/estimate."""
     sp = row.get("surprise_percent")
@@ -274,6 +287,9 @@ def build_features_for_ticker(
         if len(mag_vals) < 4:
             continue
         surprise_mag = float(np.mean(mag_vals))
+        mag_trend = surprise_magnitude_trend(mag_vals)
+        if mag_trend is None:
+            continue
 
         anchor = pit_anchor_date(cur)
         q = int(cur["quarter"]) if pd.notna(cur.get("quarter")) else 1
@@ -304,6 +320,7 @@ def build_features_for_ticker(
             "beat_rate_4q": br4,
             "beat_rate_8q": br8,
             "surprise_magnitude_avg": surprise_mag,
+            "surprise_magnitude_trend": mag_trend,
             "momentum_30d": mom30,
             "momentum_60d": mom60,
             "hist_vol_30d": hv,
