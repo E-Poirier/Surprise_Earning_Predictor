@@ -116,28 +116,54 @@ export default function PredictionCard({ data }) {
         })}
       </div>
 
-      {data.shap_explanation && (
-        <ShapWaterfall explanation={data.shap_explanation} />
-      )}
-
-      {Array.isArray(data.top_features) && data.top_features.length > 0 && (
-        <div className="mt-8 border-t border-slate-700/80 pt-6">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Top features (global importance)</p>
-          <ul className="mt-3 space-y-2">
-            {data.top_features.map((f) => (
-              <li
-                key={f.feature}
-                className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg bg-slate-950/40 px-3 py-2 text-sm"
+      {(data.shap_explanation ||
+        (Array.isArray(data.top_features) && data.top_features.length > 0)) && (
+        <details className="group mt-8 border-t border-slate-700/80 pt-2">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-slate-600/40 bg-slate-950/50 px-3 py-3 text-left text-sm text-slate-300 outline-none transition hover:border-slate-500/50 hover:bg-slate-900/60 focus-visible:ring-2 focus-visible:ring-slate-500 [&::-webkit-details-marker]:hidden">
+            <span>
+              <span className="font-medium text-slate-200">Optional: technical breakdown</span>
+              <span className="mt-0.5 block text-xs font-normal text-slate-500">
+                SHAP explanation and model feature highlights — expand if you want detail
+              </span>
+            </span>
+            <span
+              className="shrink-0 text-slate-500 transition group-open:rotate-180"
+              aria-hidden
+            >
+              ▼
+            </span>
+          </summary>
+          <div className="mt-4 space-y-6">
+            {data.shap_explanation && (
+              <ShapWaterfall explanation={data.shap_explanation} embedded />
+            )}
+            {Array.isArray(data.top_features) && data.top_features.length > 0 && (
+              <div
+                className={
+                  data.shap_explanation ? "border-t border-slate-700/80 pt-6" : "pt-1"
+                }
               >
-                <span className="font-mono text-slate-200">{f.feature}</span>
-                <span className="text-slate-400">
-                  <span className="tabular-nums text-slate-200">{f.value}</span>
-                  <span className="ml-2 text-xs text-slate-500">({f.direction})</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Top features (global importance)
+                </p>
+                <ul className="mt-3 space-y-2">
+                  {data.top_features.map((f) => (
+                    <li
+                      key={f.feature}
+                      className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg bg-slate-950/40 px-3 py-2 text-sm"
+                    >
+                      <span className="font-mono text-slate-200">{f.feature}</span>
+                      <span className="text-slate-400">
+                        <span className="tabular-nums text-slate-200">{f.value}</span>
+                        <span className="ml-2 text-xs text-slate-500">({f.direction})</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </details>
       )}
     </div>
   );

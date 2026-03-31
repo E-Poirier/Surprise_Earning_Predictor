@@ -6,7 +6,7 @@ function fmt(n) {
   return n.toFixed(3);
 }
 
-export default function ShapWaterfall({ explanation }) {
+export default function ShapWaterfall({ explanation, embedded = false }) {
   if (!explanation || !Array.isArray(explanation.rows)) return null;
 
   const { base_value: base, model_output: out, explained_class: ec, rows } = explanation;
@@ -42,8 +42,12 @@ export default function ShapWaterfall({ explanation }) {
 
   const scale = (v) => ((v - minV) / span) * 100;
 
+  const shell = embedded
+    ? "pt-1"
+    : "mt-6 border-t border-slate-700/80 pt-6";
+
   return (
-    <div className="mt-6 border-t border-slate-700/80 pt-6">
+    <div className={shell}>
       <p className="text-xs font-medium uppercase tracking-wide text-slate-400">SHAP explanation</p>
       <p className="mt-1 text-xs leading-relaxed text-slate-500">
         Margin contributions for predicted class <span className="font-mono text-slate-400">{ec}</span> (before
