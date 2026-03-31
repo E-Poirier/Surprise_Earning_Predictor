@@ -32,6 +32,7 @@ from src.ingestion import (
     yfinance_symbol,
 )
 from src.model_io import load_model_bundle
+from src.shap_explain import build_shap_explanation
 from src.sentiment import SentimentCache, build_inference_client
 
 logger = logging.getLogger(__name__)
@@ -265,6 +266,16 @@ def predict_for_ticker(
     probs = {label_order[j]: float(proba[j]) for j in range(len(label_order))}
 
     top = _top_features(model, feature_columns, X, k=3)
+    explainer = b.get("shap_explainer")
+    shap_explanation = build_shap_explanation(
+        explainer,
+        model,
+        X,
+        feature_columns,
+        label_order,
+        pred_idx,
+        top_n=12,
+    )
     last_q = _last_quarters_table(earnings_df, upcoming_idx, threshold_pct, max_rows=4)
     price_hist = _price_history_for_chart(prices, calendar_days=90)
 
@@ -287,4 +298,5 @@ def predict_for_ticker(
         "upcoming_fiscal_quarter": str(row_dict.get("fiscal_label") or ""),
         "earnings_anchor_date": anchor_iso,
         "price_history": price_hist,
+        "shap_explanation": shap_explanation,
     }

@@ -20,6 +20,7 @@ from config import load_config
 from config.tickers import TICKERS
 from src.errors import InsufficientHistoryError
 from src.model_io import load_model_bundle
+from src.shap_explain import make_tree_explainer
 
 from api.schemas import HealthResponse, PredictRequest, PredictResponse
 
@@ -32,7 +33,9 @@ async def lifespan(app: FastAPI):
     cfg = load_config()
     app.state.config = cfg
     try:
-        app.state.model_bundle = load_model_bundle(config=cfg)
+        bundle = load_model_bundle(config=cfg)
+        bundle["shap_explainer"] = make_tree_explainer(bundle["model"])
+        app.state.model_bundle = bundle
         app.state.model_load_error = None
     except Exception as e:
         # Missing files, unpickle errors (e.g. xgboost not installed), etc.

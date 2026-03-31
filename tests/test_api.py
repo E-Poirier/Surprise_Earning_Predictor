@@ -111,6 +111,15 @@ def test_predict_200_mocked(monkeypatch, client: TestClient):
             ],
             "upcoming_fiscal_quarter": "2024-Q4",
             "earnings_anchor_date": "2024-09-30",
+            "shap_explanation": {
+                "explained_class": "BEAT",
+                "base_value": 0.1,
+                "model_output": 0.4,
+                "rows": [
+                    {"feature": "beat_rate_8q", "value": 0.8, "shap": 0.15},
+                    {"feature": "sentiment_score", "value": 0.6, "shap": 0.15},
+                ],
+            },
         }
 
     monkeypatch.setattr("src.predict.predict_for_ticker", _fake_predict)

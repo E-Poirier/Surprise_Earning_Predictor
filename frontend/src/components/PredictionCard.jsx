@@ -1,3 +1,5 @@
+import ShapWaterfall from "./ShapWaterfall.jsx";
+
 const labelStyles = {
   BEAT: {
     ring: "ring-emerald-500/40",
@@ -114,9 +116,13 @@ export default function PredictionCard({ data }) {
         })}
       </div>
 
+      {data.shap_explanation && (
+        <ShapWaterfall explanation={data.shap_explanation} />
+      )}
+
       {Array.isArray(data.top_features) && data.top_features.length > 0 && (
         <div className="mt-8 border-t border-slate-700/80 pt-6">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Top features</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Top features (global importance)</p>
           <ul className="mt-3 space-y-2">
             {data.top_features.map((f) => (
               <li

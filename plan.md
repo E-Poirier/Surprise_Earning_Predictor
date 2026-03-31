@@ -290,12 +290,23 @@ Response (shape):
   "earnings_anchor_date": "2025-12-31",
   "price_history": [
     { "date": "2025-12-01", "close": 278.12 }
-  ]
+  ],
+  "shap_explanation": {
+    "explained_class": "BEAT",
+    "base_value": -0.12,
+    "model_output": 0.41,
+    "rows": [
+      { "feature": "beat_rate_8q", "value": 0.875, "shap": 0.08 },
+      { "feature": "sentiment_score", "value": 0.63, "shap": 0.05 }
+    ]
+  }
 }
 ```
 
 - **`upcoming_fiscal_quarter` / `earnings_anchor_date`:** fiscal label and period-end date **D** for the row being predicted (PIT anchor).
 - **`price_history`:** ~90 calendar days of daily **Close** from processed Yahoo prices (for UI chart; not a live quote).
+- **`top_features`:** legacy transparency list (global importance order + raw values + heuristic direction). Prefer **`shap_explanation`** for auditability.
+- **`shap_explanation` (optional):** **TreeSHAP** attributions for the **predicted** class in **margin / logit space** (before softmax). Each row is a feature’s signed contribution `shap` toward that class’s output, plus raw `value`. `base_value` is the explainer’s expected value for that class; `model_output` is the model margin for that class (should equal base + sum of all feature SHAPs; the API may return top-N features plus an **`Other (remaining)`** bucket so the sum matches). Omitted if the SHAP library failed to load or compute.
 
 ### 9.3 Errors
 
@@ -307,8 +318,8 @@ Response (shape):
 
 ## 10. Frontend
 
-- Vite + React; **Tailwind** utilities for layout/typography; **Recharts** for the price series chart.
-- Components: `TickerSearch` (loads `/api/tickers` for suggestions), `PredictionCard` (probabilities, top features, **upcoming quarter + fiscal period end D**), `PriceChart` (**1W / 1M / 3M** windows, **“as of”** last daily close — not live), `HistoryTable`.
+- Vite + React; **Tailwind** utilities for layout/typography; **Recharts** for the price series chart; **SHAP waterfall** as scaled horizontal segments (`ShapWaterfall.jsx` — cumulative margin from `E[f(x)]` through each feature for the predicted class).
+- Components: `TickerSearch` (loads `/api/tickers` for suggestions), `PredictionCard` (probabilities, top features, **SHAP waterfall** when `shap_explanation` is present, **upcoming quarter + fiscal period end D**), `PriceChart` (**1W / 1M / 3M** windows, **“as of”** last daily close — not live), `HistoryTable`.
 - **Auth for predict:** set **`VITE_API_KEY`** in root `.env` to the same value as **`API_KEY`** (Vite `envDir` points at repo root). Dev server proxies `/api` → `http://127.0.0.1:8000`.
 - Colors: BEAT = green, MISS = red, IN_LINE = gray; loading spinner; friendly errors (including API **503** detail when the model is not loaded).
 
@@ -348,7 +359,8 @@ Use this sequence when building; skip §15 items if time is short.
 | **5** | `api/` — health, tickers, predict + auth; `tests/test_api.py` | `curl` matches contract |
 | **6** | `frontend/` — search, prediction card, price chart, history table, Tailwind, Vite proxy, `VITE_API_KEY` | End-to-end in browser |
 | **7** | `Dockerfile`, `docker-compose.yml`, `README.md` | `docker compose up` works with mounts |
-| **8** (opt) | `notebooks/eda.ipynb`, SHAP | Nice-to-have |
+| **8** (opt) | `notebooks/eda.ipynb` | Nice-to-have |
+| **9** | **SHAP** — `shap.TreeExplainer` on load; `shap_explanation` on `/api/predict`; `ShapWaterfall` in `PredictionCard` | Auditable per-prediction attributions |
 
 **EPS revisions:** intentionally omitted (Finnhub free tier).
 
@@ -367,12 +379,12 @@ Use this sequence when building; skip §15 items if time is short.
 | Yahoo calendar rows without reported EPS | Needed so inference can find an “upcoming” quarter (estimate, no actual) |
 | `model_io` prefers `models/xgb_classifier.joblib` next to metadata | `train_metadata.json` may store a stale absolute `model_path` after moving the repo |
 | Predict returns `price_history` + quarter anchor fields | Single round-trip for UI chart and labels without extra endpoints |
+| SHAP TreeExplainer + `shap_explanation` | Instance-level signed contributions for the predicted class (margin space); waterfall in UI for finance-style auditability |
 
 ---
 
 ## 15. De-scope if time is short
 
-- SHAP
 - SEC EDGAR
 - Batch predict endpoint
 - CI/CD

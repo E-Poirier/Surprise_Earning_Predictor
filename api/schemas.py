@@ -22,6 +22,21 @@ class TopFeatureItem(BaseModel):
     direction: Literal["positive", "negative", "neutral"]
 
 
+class ShapRowItem(BaseModel):
+    feature: str
+    value: float
+    shap: float
+
+
+class ShapExplanation(BaseModel):
+    """TreeSHAP contributions for the predicted class (margin / logit before softmax)."""
+
+    explained_class: str
+    base_value: float
+    model_output: float
+    rows: List[ShapRowItem]
+
+
 class LastQuarterItem(BaseModel):
     quarter: str
     estimate: Optional[float] = None
@@ -55,6 +70,10 @@ class PredictResponse(BaseModel):
     price_history: List[PricePoint] = Field(
         default_factory=list,
         description="Recent daily closes (up to ~90 calendar days) for charting",
+    )
+    shap_explanation: Optional[ShapExplanation] = Field(
+        None,
+        description="Per-instance SHAP for the predicted class (margin space); omitted if unavailable",
     )
 
 
