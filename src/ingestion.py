@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,7 +32,6 @@ from typing import Any
 
 import finnhub
 import pandas as pd
-import yfinance as yf
 from dotenv import load_dotenv
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -125,6 +125,8 @@ def _quarter_end_before_announcement(ann: pd.Timestamp | datetime | date) -> dat
 
 def yfinance_earnings_history_rows(yf_ticker: str, ticker: str) -> list[dict[str, Any]]:
     """Quarterly EPS from Yahoo ``earnings_history`` (supplemental to Finnhub). Fragile — best-effort."""
+    import yfinance as yf
+
     try:
         t = yf.Ticker(yf_ticker)
         eh = t.earnings_history
@@ -163,6 +165,10 @@ def yfinance_earnings_history_rows(yf_ticker: str, ticker: str) -> list[dict[str
     return rows
 
 
+# yfinance raises ValueError("Yahoo caps limit at 100") if limit > 100 (see yfinance/base.py).
+YAHOO_EARNINGS_CALENDAR_MAX_LIMIT = 100
+
+
 def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int = 100) -> list[dict[str, Any]]:
     """EPS rows from Yahoo ``get_earnings_dates`` (deeper than ``earnings_history``).
 
@@ -170,9 +176,20 @@ def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int =
     announcement (US large-cap heuristic). Requires ``lxml`` for ``pd.read_html``.
     Includes **upcoming** quarters that have an EPS estimate but no reported EPS yet.
     """
+    import yfinance as yf
+
+    cap = min(max(1, int(limit)), YAHOO_EARNINGS_CALENDAR_MAX_LIMIT)
+    if int(limit) > YAHOO_EARNINGS_CALENDAR_MAX_LIMIT:
+        logger.warning(
+            "yfinance get_earnings_dates limit=%s exceeds Yahoo max %s; using %s",
+            limit,
+            YAHOO_EARNINGS_CALENDAR_MAX_LIMIT,
+            cap,
+        )
+
     try:
         t = yf.Ticker(yf_ticker)
-        df = t.get_earnings_dates(limit=limit)
+        df = t.get_earnings_dates(limit=cap)
     except ImportError as e:
         logger.warning("yfinance earnings calendar skipped for %s (install lxml): %s", yf_ticker, e)
         return []
@@ -333,6 +350,8 @@ def _ingest_yfinance(
     raw_dir: Path,
 ) -> dict[str, Any]:
     """Daily OHLCV + metadata from Yahoo. Returns a small metadata dict."""
+    import yfinance as yf
+
     meta: dict[str, Any] = {"symbol": ticker, "yahoo_symbol": yf_ticker}
     try:
         t = yf.Ticker(yf_ticker)
@@ -376,6 +395,7 @@ def ingest_one_ticker(
     *,
     news_sample: bool = False,
     news_sample_days: int = 30,
+    fh_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
     """Pull Finnhub earnings + yfinance prices; optional news sample.
 
@@ -389,9 +409,17 @@ def ingest_one_ticker(
 
     yf_sym = yfinance_symbol(ticker)
 
-    try:
-        earnings_raw = client.company_earnings(ticker, limit=limit)
+    def _finnhub_earnings() -> Any:
+        raw = client.company_earnings(ticker, limit=limit)
         _sleep_after_finnhub(cfg)
+        return raw
+
+    try:
+        if fh_lock is not None:
+            with fh_lock:
+                earnings_raw = _finnhub_earnings()
+        else:
+            earnings_raw = _finnhub_earnings()
         _write_json(raw_dir / f"{ticker}_earnings.json", earnings_raw)
         earnings_list = earnings_raw if isinstance(earnings_raw, list) else []
         if ig.get("yfinance_earnings_backfill", True):
@@ -416,7 +444,15 @@ def ingest_one_ticker(
         if news_sample:
             end = date.today()
             start = end - timedelta(days=news_sample_days)
-            news = fetch_company_news_range(client, ticker, start, end, cfg)
+
+            def _finnhub_news() -> list[dict[str, Any]]:
+                return fetch_company_news_range(client, ticker, start, end, cfg)
+
+            if fh_lock is not None:
+                with fh_lock:
+                    news = _finnhub_news()
+            else:
+                news = _finnhub_news()
             _write_json(raw_dir / f"{ticker}_news_sample.json", news)
 
         meta = _ingest_yfinance(ticker, yf_sym, yf_period, processed_dir, raw_dir)
@@ -434,8 +470,13 @@ def run_ingestion(
     tickers: list[str],
     *,
     news_sample: bool = False,
+    jobs: int = 1,
 ) -> dict[str, Any]:
-    """Ingest all symbols; returns a manifest dict."""
+    """Ingest all symbols; returns a manifest dict.
+
+    When ``jobs`` > 1, tickers are processed concurrently; a shared lock serializes Finnhub
+    calls so rate limits are respected while Yahoo Finance work can overlap.
+    """
     load_dotenv(project_root() / ".env")
     api_key = os.environ.get("FINNHUB_API_KEY")
     if not api_key:
@@ -451,19 +492,50 @@ def run_ingestion(
     results: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
 
-    for i, ticker in enumerate(tickers):
-        logger.info("Ingesting %s (%d/%d)", ticker, i + 1, len(tickers))
-        row = ingest_one_ticker(
-            client,
-            ticker,
-            cfg,
-            raw_dir,
-            processed_dir,
-            news_sample=news_sample,
-        )
-        results.append(row)
-        if not row.get("ok"):
-            errors[ticker] = str(row.get("error") or "unknown")
+    fh_lock = threading.Lock() if jobs > 1 else None
+    if jobs < 1:
+        jobs = 1
+
+    if jobs == 1:
+        for i, ticker in enumerate(tickers):
+            logger.info("Ingesting %s (%d/%d)", ticker, i + 1, len(tickers))
+            row = ingest_one_ticker(
+                client,
+                ticker,
+                cfg,
+                raw_dir,
+                processed_dir,
+                news_sample=news_sample,
+                fh_lock=None,
+            )
+            results.append(row)
+            if not row.get("ok"):
+                errors[ticker] = str(row.get("error") or "unknown")
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _one(sym: str) -> tuple[str, dict[str, Any]]:
+            row = ingest_one_ticker(
+                client,
+                sym,
+                cfg,
+                raw_dir,
+                processed_dir,
+                news_sample=news_sample,
+                fh_lock=fh_lock,
+            )
+            return sym, row
+
+        logger.info("Ingesting %d tickers with jobs=%d (Finnhub serialized)", len(tickers), jobs)
+        results_by: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            futs = {ex.submit(_one, t): t for t in tickers}
+            for fut in as_completed(futs):
+                sym, row = fut.result()
+                results_by[sym] = row
+                if not row.get("ok"):
+                    errors[sym] = str(row.get("error") or "unknown")
+        results = [results_by[t] for t in tickers]
 
     metadata_rows = [r["metadata"] for r in results if r.get("ok") and "metadata" in r]
     meta_df = pd.DataFrame(metadata_rows)
@@ -475,6 +547,7 @@ def run_ingestion(
         "succeeded": [r["symbol"] for r in results if r.get("ok")],
         "failed": errors,
         "news_sample": news_sample,
+        "jobs": jobs,
     }
     _write_json(processed_dir / "ingestion_manifest.json", manifest)
     return manifest
@@ -500,6 +573,13 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also fetch a recent Finnhub news window per ticker (extra API calls)",
     )
+    p.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Concurrent tickers (default 1). Finnhub calls are globally serialized; Yahoo work can overlap.",
+    )
     return p.parse_args()
 
 
@@ -510,7 +590,7 @@ def main() -> None:
         tickers = [args.spike.strip().upper()]
     else:
         tickers = list(args.tickers) if args.tickers else list(TICKERS)
-    manifest = run_ingestion(tickers, news_sample=args.news_sample)
+    manifest = run_ingestion(tickers, news_sample=args.news_sample, jobs=max(1, int(args.jobs)))
     logger.info("Done. Succeeded: %d, failed: %d", len(manifest["succeeded"]), len(manifest["failed"]))
     if manifest["failed"]:
         logger.warning("Failures: %s", manifest["failed"])

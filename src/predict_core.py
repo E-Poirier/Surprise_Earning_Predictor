@@ -19,7 +19,11 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from config import load_config, project_root, resolve_path
-from src.errors import InsufficientHistoryError
+from src.errors import (
+    REASON_DETAIL_MESSAGES,
+    REASON_MISSING_PROCESSED_DATA,
+    InsufficientHistoryError,
+)
 from src.features import (
     build_upcoming_inference_row,
     prepare_prices_df,
@@ -29,6 +33,7 @@ from src.ingestion import (
     merge_earnings_by_period,
     normalize_earnings_rows,
     yfinance_earnings_calendar_rows,
+    yfinance_earnings_history_rows,
     yfinance_symbol,
 )
 from src.model_io import load_model_bundle
@@ -125,6 +130,117 @@ def _price_history_for_chart(prices: pd.DataFrame, *, calendar_days: int = 90) -
     return out
 
 
+def try_load_prediction_context(
+    ticker: str,
+    cfg: dict[str, Any],
+    *,
+    refresh_finnhub: bool = True,
+) -> dict[str, Any] | None:
+    """Load earnings/prices and clients for inference.
+
+    Returns ``None`` if processed parquet files are missing. Applies optional Finnhub refresh
+    and Yahoo earnings calendar merge (same order as :func:`predict_for_ticker`).
+    """
+    processed_dir = resolve_path("processed", cfg)
+    earn_path = processed_dir / f"{ticker}_earnings.parquet"
+    px_path = processed_dir / f"{ticker}_prices.parquet"
+    meta_path = processed_dir / "ticker_metadata.parquet"
+    if not earn_path.exists() or not px_path.exists() or not meta_path.exists():
+        return None
+
+    earnings_df = pd.read_parquet(earn_path)
+    api_key = os.environ.get("FINNHUB_API_KEY")
+    if refresh_finnhub and api_key:
+        try:
+            client = finnhub.Client(api_key=api_key)
+            earnings_df = refresh_earnings_with_finnhub(ticker, earnings_df, client, cfg)
+        except Exception as e:
+            logger.warning("Finnhub refresh failed for %s; using on-disk earnings: %s", ticker, e)
+
+    ig = cfg.get("ingestion", {})
+    if ig.get("yfinance_earnings_backfill", True):
+        cal_limit = int(ig.get("yfinance_earnings_calendar_limit", 100))
+        yf_sym = yfinance_symbol(ticker)
+        try:
+            # Match ingestion: earnings_history then calendar (both add quarters Finnhub may omit).
+            rows_in = earnings_df.to_dict("records")
+            yf_hist = yfinance_earnings_history_rows(yf_sym, ticker)
+            merged = merge_earnings_by_period(rows_in, yf_hist)
+            yf_cal = yfinance_earnings_calendar_rows(yf_sym, ticker, limit=cal_limit)
+            merged = merge_earnings_by_period(merged, yf_cal)
+            earnings_df = normalize_earnings_rows(merged)
+            logger.info(
+                "%s earnings at predict: %d rows after Yahoo merge (history + calendar)",
+                ticker,
+                len(earnings_df),
+            )
+        except Exception as e:
+            logger.warning("Yahoo earnings merge failed for %s: %s", ticker, e)
+
+    prices_raw = pd.read_parquet(px_path)
+    prices = prepare_prices_df(prices_raw)
+
+    meta_df = pd.read_parquet(meta_path)
+    sector_universe = _sector_universe_from_metadata(meta_df)
+    m = meta_df.loc[meta_df["symbol"] == ticker]
+    sector = str(m.iloc[0]["sector"]) if not m.empty else "Unknown"
+
+    threshold_pct = float(cfg["target"]["surprise_threshold_pct"])
+    hf_key = os.environ.get("HF_API_KEY")
+    skip_sentiment = not bool(hf_key)
+    finnhub_client: finnhub.Client | None = finnhub.Client(api_key) if api_key else None
+    hf_client: Any = build_inference_client(cfg) if not skip_sentiment else None
+    sentiment_cache: SentimentCache | None = None
+    if not skip_sentiment:
+        sentiment_cache = SentimentCache(resolve_path("sentiment_cache", cfg))
+        sentiment_cache.load()
+
+    return {
+        "earnings_df": earnings_df,
+        "prices": prices,
+        "sector": sector,
+        "sector_universe": sector_universe,
+        "threshold_pct": threshold_pct,
+        "finnhub_client": finnhub_client,
+        "hf_client": hf_client,
+        "sentiment_cache": sentiment_cache,
+        "skip_sentiment": skip_sentiment,
+    }
+
+
+def predictability_for_ticker(
+    ticker: str,
+    *,
+    config: dict[str, Any] | None = None,
+    refresh_finnhub: bool = False,
+) -> tuple[bool, str | None]:
+    """Return whether a full feature row can be built (disk + merge path; no model).
+
+    ``refresh_finnhub=False`` matches a fast bulk check from last ingestion; ``True`` matches
+    :func:`predict_for_ticker` data freshness more closely but is slower (Finnhub per ticker).
+    """
+    cfg = config if config is not None else load_config()
+    ctx = try_load_prediction_context(ticker, cfg, refresh_finnhub=refresh_finnhub)
+    if ctx is None:
+        return False, REASON_MISSING_PROCESSED_DATA
+    built = build_upcoming_inference_row(
+        ticker,
+        cfg,
+        earnings_df=ctx["earnings_df"],
+        prices=ctx["prices"],
+        sector=ctx["sector"],
+        sector_universe=ctx["sector_universe"],
+        threshold_pct=ctx["threshold_pct"],
+        finnhub_client=ctx["finnhub_client"],
+        hf_client=ctx["hf_client"],
+        sentiment_cache=ctx["sentiment_cache"],
+        skip_sentiment=ctx["skip_sentiment"],
+    )
+    if built[0] is None:
+        return False, built[1]
+    return True, None
+
+
 def _last_quarters_table(
     earnings: pd.DataFrame,
     upcoming_idx: int,
@@ -185,71 +301,30 @@ def predict_for_ticker(
     feature_columns: list[str] = b["feature_columns"]
     label_order: list[str] = b["label_order"]
 
-    processed_dir = resolve_path("processed", cfg)
-    earn_path = processed_dir / f"{ticker}_earnings.parquet"
-    px_path = processed_dir / f"{ticker}_prices.parquet"
-    meta_path = processed_dir / "ticker_metadata.parquet"
-    if not earn_path.exists() or not px_path.exists():
-        raise InsufficientHistoryError("missing processed earnings or prices parquet; run ingestion")
-    if not meta_path.exists():
-        raise InsufficientHistoryError("missing ticker_metadata.parquet; run ingestion")
-
-    earnings_df = pd.read_parquet(earn_path)
-    api_key = os.environ.get("FINNHUB_API_KEY")
-    if api_key:
-        try:
-            client = finnhub.Client(api_key=api_key)
-            earnings_df = refresh_earnings_with_finnhub(ticker, earnings_df, client, cfg)
-        except Exception as e:
-            logger.warning("Finnhub refresh failed for %s; using on-disk earnings: %s", ticker, e)
-
-    # Match ingestion: Yahoo earnings calendar adds **future** quarters (estimate, no actual) so
-    # ``find_upcoming_earnings_index`` can resolve the next report; calendar scrape alone is not in Finnhub refresh.
-    ig = cfg.get("ingestion", {})
-    if ig.get("yfinance_earnings_backfill", True):
-        cal_limit = int(ig.get("yfinance_earnings_calendar_limit", 100))
-        try:
-            yf_cal = yfinance_earnings_calendar_rows(yfinance_symbol(ticker), ticker, limit=cal_limit)
-            merged = merge_earnings_by_period(earnings_df.to_dict("records"), yf_cal)
-            earnings_df = normalize_earnings_rows(merged)
-        except Exception as e:
-            logger.warning("Yahoo earnings calendar merge failed for %s: %s", ticker, e)
-
-    prices_raw = pd.read_parquet(px_path)
-    prices = prepare_prices_df(prices_raw)
-
-    meta_df = pd.read_parquet(meta_path)
-    sector_universe = _sector_universe_from_metadata(meta_df)
-    m = meta_df.loc[meta_df["symbol"] == ticker]
-    sector = str(m.iloc[0]["sector"]) if not m.empty else "Unknown"
-
-    threshold_pct = float(cfg["target"]["surprise_threshold_pct"])
-    hf_key = os.environ.get("HF_API_KEY")
-    skip_sentiment = not bool(hf_key)
-    finnhub_client: finnhub.Client | None = finnhub.Client(api_key) if api_key else None
-    hf_client: Any = build_inference_client(cfg) if not skip_sentiment else None
-    sentiment_cache: SentimentCache | None = None
-    if not skip_sentiment:
-        sentiment_cache = SentimentCache(resolve_path("sentiment_cache", cfg))
-        sentiment_cache.load()
+    ctx = try_load_prediction_context(ticker, cfg, refresh_finnhub=True)
+    if ctx is None:
+        raise InsufficientHistoryError(
+            REASON_DETAIL_MESSAGES[REASON_MISSING_PROCESSED_DATA],
+            reason_code=REASON_MISSING_PROCESSED_DATA,
+        )
 
     built = build_upcoming_inference_row(
         ticker,
         cfg,
-        earnings_df=earnings_df,
-        prices=prices,
-        sector=sector,
-        sector_universe=sector_universe,
-        threshold_pct=threshold_pct,
-        finnhub_client=finnhub_client,
-        hf_client=hf_client,
-        sentiment_cache=sentiment_cache,
-        skip_sentiment=skip_sentiment,
+        earnings_df=ctx["earnings_df"],
+        prices=ctx["prices"],
+        sector=ctx["sector"],
+        sector_universe=ctx["sector_universe"],
+        threshold_pct=ctx["threshold_pct"],
+        finnhub_client=ctx["finnhub_client"],
+        hf_client=ctx["hf_client"],
+        sentiment_cache=ctx["sentiment_cache"],
+        skip_sentiment=ctx["skip_sentiment"],
     )
-    if built is None:
-        raise InsufficientHistoryError(
-            "need at least 8 completed quarters before an upcoming quarter with estimate; refresh ingestion"
-        )
+    if built[0] is None:
+        code = built[1]
+        msg = REASON_DETAIL_MESSAGES.get(code, "Insufficient history for prediction.")
+        raise InsufficientHistoryError(msg, reason_code=code)
     row_dict, upcoming_idx = built
 
     X = np.zeros((1, len(feature_columns)), dtype=np.float64)
@@ -276,8 +351,8 @@ def predict_for_ticker(
         pred_idx,
         top_n=12,
     )
-    last_q = _last_quarters_table(earnings_df, upcoming_idx, threshold_pct, max_rows=4)
-    price_hist = _price_history_for_chart(prices, calendar_days=90)
+    last_q = _last_quarters_table(ctx["earnings_df"], upcoming_idx, ctx["threshold_pct"], max_rows=4)
+    price_hist = _price_history_for_chart(ctx["prices"], calendar_days=90)
 
     anchor = row_dict.get("earnings_date")
     anchor_iso: str | None

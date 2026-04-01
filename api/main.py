@@ -22,7 +22,7 @@ from src.errors import InsufficientHistoryError
 from src.model_io import load_model_bundle
 from src.shap_explain import make_tree_explainer
 
-from api.schemas import HealthResponse, PredictRequest, PredictResponse
+from api.schemas import HealthResponse, PredictRequest, PredictResponse, PredictableTickersResponse
 
 _TICKER_SET = {t.upper() for t in TICKERS}
 
@@ -68,6 +68,30 @@ def list_tickers() -> List[str]:
     return list(TICKERS)
 
 
+@app.get("/api/tickers/predictable", response_model=PredictableTickersResponse)
+def list_predictable_tickers(
+    live: bool = False,
+) -> PredictableTickersResponse:
+    """Tickers that currently pass the same feature-row checks as ``/api/predict`` (no model call).
+
+    When ``live`` is false (default), uses on-disk processed data plus Yahoo calendar merge only
+    (fast; matches post-ingestion state). When ``live`` is true, refreshes Finnhub earnings per
+    symbol first (slower; closer to a single ``/api/predict`` request).
+    """
+    from src.predict_core import predictability_for_ticker
+
+    cfg: Dict[str, Any] = app.state.config
+    ok: List[str] = []
+    bad: Dict[str, str] = {}
+    for t in TICKERS:
+        eligible, reason = predictability_for_ticker(t, config=cfg, refresh_finnhub=live)
+        if eligible:
+            ok.append(t)
+        else:
+            bad[t] = reason or "unknown"
+    return PredictableTickersResponse(tickers=ok, ineligible=bad)
+
+
 @app.post("/api/predict", response_model=None)
 def predict(
     body: PredictRequest,
@@ -86,8 +110,15 @@ def predict(
 
     try:
         raw = predict_for_ticker(t, config=app.state.config, bundle=app.state.model_bundle)
-    except InsufficientHistoryError:
-        return JSONResponse(status_code=422, content={"error": "insufficient_history"})
+    except InsufficientHistoryError as e:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "insufficient_history",
+                "reason": e.reason_code,
+                "detail": str(e),
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 

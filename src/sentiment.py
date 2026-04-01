@@ -29,8 +29,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
-from huggingface_hub.errors import HfHubHTTPError, InferenceTimeoutError
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -85,6 +83,8 @@ def _truncate(text: str) -> str:
 
 
 def _should_retry_inference(exc: BaseException) -> bool:
+    from huggingface_hub.errors import HfHubHTTPError, InferenceTimeoutError
+
     if isinstance(exc, InferenceTimeoutError):
         return True
     if isinstance(exc, HfHubHTTPError):
@@ -140,12 +140,14 @@ class SentimentCache:
             json.dump(self.data, f, indent=2, sort_keys=True)
 
 
-def build_inference_client(cfg: dict[str, Any] | None = None) -> InferenceClient:
+def build_inference_client(cfg: dict[str, Any] | None = None) -> Any:
     """``InferenceClient`` + ``HF_API_KEY``. Provider from ``sentiment.hf_provider`` (default ``auto``).
 
     ``hf-inference`` alone can return **400** for some BERT checkpoints on the router;
     ``auto`` lets Hugging Face choose a working inference route.
     """
+    from huggingface_hub import InferenceClient
+
     load_dotenv(project_root() / ".env")
     token = os.environ.get("HF_API_KEY")
     if not token:
@@ -206,11 +208,13 @@ def headlines_from_finnhub_news(
 def score_headline(
     text: str,
     *,
-    client: InferenceClient,
+    client: Any,
     cache: SentimentCache | None,
     cfg: dict[str, Any],
 ) -> float:
     """Single headline → positive FinBERT score; uses cache; neutral on failure after retries."""
+    from huggingface_hub.errors import HfHubHTTPError, InferenceTimeoutError
+
     sentiment_cfg = cfg.get("sentiment", {})
     neutral = float(sentiment_cfg.get("neutral_score", 0.5))
     max_retries = int(sentiment_cfg.get("max_retries", 3))
@@ -266,7 +270,7 @@ def score_headline(
 def aggregate_sentiment(
     headlines: list[str],
     *,
-    client: InferenceClient | None = None,
+    client: Any | None = None,
     cfg: dict[str, Any] | None = None,
     cache: SentimentCache | None = None,
 ) -> float:

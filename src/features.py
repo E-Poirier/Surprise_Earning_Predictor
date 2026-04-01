@@ -34,6 +34,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from config import load_config, project_root, resolve_path
 from config.tickers import TICKERS
+from src.errors import (
+    REASON_NO_UPCOMING_QUARTER,
+    REASON_PRIOR_QUARTER_LABELS,
+    REASON_PRICE_FEATURES,
+    REASON_SHORT_HISTORY,
+    REASON_SURPRISE_MAGNITUDE,
+)
 from src.ingestion import fetch_company_news_range
 from src.sentiment import (
     SentimentCache,
@@ -347,14 +354,12 @@ def row_has_estimate(row: pd.Series) -> bool:
     return e is not None and pd.notna(e)
 
 
-def find_upcoming_earnings_index(earnings: pd.DataFrame) -> int | None:
-    """Index (in period-sorted frame) of the **most recent** quarter without an actual but with an estimate.
-
-    Requires eight fully reported quarters immediately before it (same prior window as training).
-    Returns ``None`` if no such row exists.
-    """
+def find_upcoming_earnings_index_detailed(
+    earnings: pd.DataFrame,
+) -> tuple[int | None, str | None]:
+    """Like ``find_upcoming_earnings_index`` but returns ``(None, reason_code)`` on failure."""
     if earnings.empty or len(earnings) < 9:
-        return None
+        return None, REASON_SHORT_HISTORY
     e = earnings.copy()
     e["_pit_order"] = pd.to_datetime(e["period"], errors="coerce")
     e = e.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
@@ -370,8 +375,18 @@ def find_upcoming_earnings_index(earnings: pd.DataFrame) -> int | None:
             continue
         if not all(row_has_actual(r) and row_has_estimate(r) for _, r in prior8.iterrows()):
             continue
-        return i
-    return None
+        return i, None
+    return None, REASON_NO_UPCOMING_QUARTER
+
+
+def find_upcoming_earnings_index(earnings: pd.DataFrame) -> int | None:
+    """Index (in period-sorted frame) of the **most recent** quarter without an actual but with an estimate.
+
+    Requires eight fully reported quarters immediately before it (same prior window as training).
+    Returns ``None`` if no such row exists.
+    """
+    idx, _ = find_upcoming_earnings_index_detailed(earnings)
+    return idx
 
 
 def build_upcoming_inference_row(
@@ -387,14 +402,14 @@ def build_upcoming_inference_row(
     hf_client: Any,
     sentiment_cache: SentimentCache | None,
     skip_sentiment: bool,
-) -> tuple[dict[str, Any], int] | None:
+) -> tuple[dict[str, Any], int] | tuple[None, str]:
     """Single feature row for the **next** unreported quarter (no ``target``). Mirrors training PIT logic.
 
-    Returns ``(feature_row, sorted_row_index)`` for the upcoming quarter, or ``None`` if unavailable.
+    Returns ``(feature_row, sorted_row_index)`` on success, or ``(None, reason_code)`` if unavailable.
     """
-    idx = find_upcoming_earnings_index(earnings_df)
+    idx, early_reason = find_upcoming_earnings_index_detailed(earnings_df)
     if idx is None:
-        return None
+        return None, early_reason or REASON_NO_UPCOMING_QUARTER
 
     earnings = earnings_df.copy()
     earnings["_pit_order"] = pd.to_datetime(earnings["period"], errors="coerce")
@@ -407,7 +422,7 @@ def build_upcoming_inference_row(
     br8 = beat_rate(prior8, threshold_pct)
     br4 = beat_rate(prior4, threshold_pct)
     if br8 is None or br4 is None:
-        return None
+        return None, REASON_PRIOR_QUARTER_LABELS
 
     mag_vals: list[float] = []
     for _, r in prior4.iterrows():
@@ -415,11 +430,11 @@ def build_upcoming_inference_row(
         if v is not None:
             mag_vals.append(v)
     if len(mag_vals) < 4:
-        return None
+        return None, REASON_SURPRISE_MAGNITUDE
     surprise_mag = float(np.mean(mag_vals))
     mag_trend = surprise_magnitude_trend(mag_vals)
     if mag_trend is None:
-        return None
+        return None, REASON_SURPRISE_MAGNITUDE
 
     anchor = pit_anchor_date(cur)
     q = int(cur["quarter"]) if pd.notna(cur.get("quarter")) else 1
@@ -428,7 +443,7 @@ def build_upcoming_inference_row(
     mom60 = momentum_calendar_return(prices, anchor, lookback_days=60)
     hv = hist_vol_30d(prices, anchor)
     if mom30 is None or mom60 is None or hv is None:
-        return None
+        return None, REASON_PRICE_FEATURES
 
     if skip_sentiment:
         sent = float(cfg.get("sentiment", {}).get("neutral_score", 0.5))

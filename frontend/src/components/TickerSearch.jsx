@@ -60,7 +60,8 @@ export default function TickerSearch({
     <div className="w-full max-w-xl">
       <form onSubmit={handleSubmit} className="relative">
         <label htmlFor="ticker-input" className="mb-2 block text-sm font-medium text-slate-300">
-          Ticker
+          Ticker{" "}
+          <span className="font-normal text-slate-500">(supported universe; some may lack enough history)</span>
         </label>
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -70,7 +71,7 @@ export default function TickerSearch({
               autoComplete="off"
               placeholder="e.g. AAPL"
               value={query}
-              disabled={disabled || loadState === "loading"}
+              disabled={disabled}
               onChange={(e) => {
                 setQuery(e.target.value.toUpperCase());
                 setOpen(true);
@@ -112,7 +113,7 @@ export default function TickerSearch({
       </form>
 
       {loadState === "loading" && (
-        <p className="mt-2 text-xs text-slate-500">Loading supported tickers…</p>
+        <p className="mt-2 text-xs text-slate-500">Loading ticker list…</p>
       )}
       {loadState === "error" && (
         <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">

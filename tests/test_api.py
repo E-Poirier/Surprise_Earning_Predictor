@@ -66,10 +66,10 @@ def test_predict_422_insufficient_history(monkeypatch, client: TestClient):
     if app.state.model_bundle is None:
         pytest.skip("Model bundle not loaded")
 
-    from src.errors import InsufficientHistoryError
+    from src.errors import REASON_SHORT_HISTORY, InsufficientHistoryError
 
     def _raise(*_a, **_k):
-        raise InsufficientHistoryError("test")
+        raise InsufficientHistoryError("test", reason_code=REASON_SHORT_HISTORY)
 
     monkeypatch.setattr("src.predict.predict_for_ticker", _raise)
     r = client.post(
@@ -78,7 +78,24 @@ def test_predict_422_insufficient_history(monkeypatch, client: TestClient):
         headers={"x-api-key": os.environ["API_KEY"]},
     )
     assert r.status_code == 422
-    assert r.json() == {"error": "insufficient_history"}
+    data = r.json()
+    assert data["error"] == "insufficient_history"
+    assert data["reason"] == REASON_SHORT_HISTORY
+    assert data["detail"] == "test"
+
+
+def test_tickers_predictable_ok(client: TestClient, monkeypatch):
+    # Avoid full parquet + yfinance path in minimal test envs
+    monkeypatch.setattr(
+        "src.predict_core.predictability_for_ticker",
+        lambda *a, **k: (True, None),
+    )
+    r = client.get("/api/tickers/predictable")
+    assert r.status_code == 200
+    data = r.json()
+    assert "tickers" in data and "ineligible" in data
+    assert isinstance(data["tickers"], list)
+    assert isinstance(data["ineligible"], dict)
 
 
 def test_predict_200_mocked(monkeypatch, client: TestClient):

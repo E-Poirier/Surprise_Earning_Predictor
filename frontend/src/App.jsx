@@ -35,6 +35,10 @@ function friendlyError(err) {
     return "That ticker is not in the supported universe.";
   }
   if (status === 422 && code === "insufficient_history") {
+    const detail = err.body?.detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
     return "Not enough earnings history to build a prediction for this ticker.";
   }
   if (status === 503) {

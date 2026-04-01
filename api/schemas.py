@@ -79,3 +79,15 @@ class PredictResponse(BaseModel):
 
 class ErrorBody(BaseModel):
     error: str
+    reason: Optional[str] = Field(None, description="Machine-readable code when error is insufficient_history")
+    detail: Optional[str] = Field(None, description="Human-readable explanation")
+
+
+class PredictableTickersResponse(BaseModel):
+    """Symbols that can build a full inference row from processed data (see ``predictability_for_ticker``)."""
+
+    tickers: List[str] = Field(..., description="Subset of the configured universe that is currently predictable")
+    ineligible: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Ticker → reason code for symbols that are not predictable",
+    )

@@ -12,6 +12,17 @@ export async function fetchTickers() {
   return res.json();
 }
 
+/** Tickers that currently pass inference feature checks (subset of the full universe). */
+export async function fetchPredictableTickers() {
+  const res = await fetch("/api/tickers/predictable");
+  if (!res.ok) {
+    const err = new Error("tickers_fetch_failed");
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
 export async function predictTicker(ticker) {
   const key = import.meta.env.VITE_API_KEY;
   if (!key) {
