@@ -54,6 +54,24 @@ logger = logging.getLogger(__name__)
 
 _CLOSE = "Close"
 
+# --- Fiscal ordering (point-in-time) ---
+
+# Training and inference both require a contiguous window of prior fiscal quarters; see
+# ``find_upcoming_earnings_index_detailed`` and ``build_features_for_ticker``.
+MIN_EARNINGS_ROWS_FOR_WINDOW = 9
+MIN_PRIOR_QUARTERS = 8
+
+
+def sort_earnings_by_period(earnings_df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy sorted by fiscal ``period`` (quarter-end date).
+
+    Used everywhere earnings rows must align with point-in-time ordering: training rows,
+    upcoming-quarter lookup, and API tables.
+    """
+    out = earnings_df.copy()
+    out["_pit_order"] = pd.to_datetime(out["period"], errors="coerce")
+    return out.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+
 
 def pit_anchor_date(row: pd.Series) -> date:
     """Point-in-time calendar anchor ``D`` from Finnhub ``period`` (fiscal quarter end)."""
@@ -253,21 +271,21 @@ def build_features_for_ticker(
     skip_sentiment: bool,
 ) -> list[dict[str, Any]]:
     """One row per company-quarter with enough prior history and a realized outcome."""
-    earnings = earnings_df.copy()
-    earnings["_pit_order"] = pd.to_datetime(earnings["period"], errors="coerce")
-    earnings = earnings.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+    earnings = sort_earnings_by_period(earnings_df)
     n = len(earnings)
     rows: list[dict[str, Any]] = []
-    if n < 9:
+    if n < MIN_EARNINGS_ROWS_FOR_WINDOW:
         logger.warning(
-            "%s: need at least 9 earnings rows (8 prior quarters + current); have %d",
+            "%s: need at least %d earnings rows (%d prior quarters + current); have %d",
             ticker,
+            MIN_EARNINGS_ROWS_FOR_WINDOW,
+            MIN_PRIOR_QUARTERS,
             n,
         )
         return rows
 
     for i in range(n):
-        if i < 8:
+        if i < MIN_PRIOR_QUARTERS:
             continue
         cur = earnings.iloc[i]
         act = cur.get("actual")
@@ -358,20 +376,19 @@ def find_upcoming_earnings_index_detailed(
     earnings: pd.DataFrame,
 ) -> tuple[int | None, str | None]:
     """Like ``find_upcoming_earnings_index`` but returns ``(None, reason_code)`` on failure."""
-    if earnings.empty or len(earnings) < 9:
+    if earnings.empty or len(earnings) < MIN_EARNINGS_ROWS_FOR_WINDOW:
         return None, REASON_SHORT_HISTORY
-    e = earnings.copy()
-    e["_pit_order"] = pd.to_datetime(e["period"], errors="coerce")
-    e = e.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+    e = sort_earnings_by_period(earnings)
     n = len(e)
-    for i in range(n - 1, 7, -1):
+    # Walk backward from the latest period: first row with estimate but no actual, and a full prior window.
+    for i in range(n - 1, MIN_PRIOR_QUARTERS - 1, -1):
         cur = e.iloc[i]
         if row_has_actual(cur):
             continue
         if not row_has_estimate(cur):
             continue
-        prior8 = e.iloc[i - 8 : i]
-        if len(prior8) != 8:
+        prior8 = e.iloc[i - MIN_PRIOR_QUARTERS : i]
+        if len(prior8) != MIN_PRIOR_QUARTERS:
             continue
         if not all(row_has_actual(r) and row_has_estimate(r) for _, r in prior8.iterrows()):
             continue
@@ -411,12 +428,10 @@ def build_upcoming_inference_row(
     if idx is None:
         return None, early_reason or REASON_NO_UPCOMING_QUARTER
 
-    earnings = earnings_df.copy()
-    earnings["_pit_order"] = pd.to_datetime(earnings["period"], errors="coerce")
-    earnings = earnings.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+    earnings = sort_earnings_by_period(earnings_df)
 
     cur = earnings.iloc[idx]
-    prior8 = earnings.iloc[idx - 8 : idx]
+    prior8 = earnings.iloc[idx - MIN_PRIOR_QUARTERS : idx]
     prior4 = earnings.iloc[idx - 4 : idx]
 
     br8 = beat_rate(prior8, threshold_pct)

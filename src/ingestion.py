@@ -43,6 +43,10 @@ from config.tickers import TICKERS
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Symbol mapping & Finnhub helpers
+# ---------------------------------------------------------------------------
+
 
 def yfinance_symbol(ticker: str) -> str:
     """Map configured symbol to Yahoo ticker when they differ."""
@@ -67,6 +71,11 @@ def _payload_to_dataframe(payload: Any) -> pd.DataFrame:
             return pd.DataFrame(inner)
         return pd.DataFrame([payload])
     return pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Earnings merge (Finnhub + Yahoo share the same fiscal ``period`` key)
+# ---------------------------------------------------------------------------
 
 
 def normalize_period_key(period: Any) -> str | None:
@@ -123,6 +132,9 @@ def _quarter_end_before_announcement(ann: pd.Timestamp | datetime | date) -> dat
     return max(candidates) if candidates else ad
 
 
+# --- Yahoo: supplemental EPS (Finnhub free tier gaps) ---
+
+
 def yfinance_earnings_history_rows(yf_ticker: str, ticker: str) -> list[dict[str, Any]]:
     """Quarterly EPS from Yahoo ``earnings_history`` (supplemental to Finnhub). Fragile — best-effort."""
     import yfinance as yf
@@ -169,6 +181,38 @@ def yfinance_earnings_history_rows(yf_ticker: str, ticker: str) -> list[dict[str
 YAHOO_EARNINGS_CALENDAR_MAX_LIMIT = 100
 
 
+def _calendar_html_column(row: pd.Series, *candidates: str) -> Any:
+    """Resolve a cell from Yahoo's HTML earnings table despite varying column labels."""
+    for c in candidates:
+        if c in row.index:
+            return row[c]
+    for c in row.index:
+        cl = str(c).lower().replace(" ", "")
+        for want in candidates:
+            if want.lower().replace(" ", "") in cl:
+                return row[c]
+    return None
+
+
+def _calendar_eps_cell_missing(v: Any) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, float) and pd.isna(v):
+        return True
+    if isinstance(v, str) and v.strip() in ("", "-", "—", "N/A", "n/a"):
+        return True
+    return False
+
+
+def _calendar_eps_to_float(v: Any) -> float | None:
+    if _calendar_eps_cell_missing(v):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int = 100) -> list[dict[str, Any]]:
     """EPS rows from Yahoo ``get_earnings_dates`` (deeper than ``earnings_history``).
 
@@ -201,46 +245,18 @@ def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int =
 
     df = df.sort_index(ascending=True)
 
-    def _col(row: pd.Series, *candidates: str) -> Any:
-        for c in candidates:
-            if c in row.index:
-                return row[c]
-        for c in row.index:
-            cl = str(c).lower().replace(" ", "")
-            for want in candidates:
-                if want.lower().replace(" ", "") in cl:
-                    return row[c]
-        return None
-
-    def _eps_cell_missing(v: Any) -> bool:
-        if v is None:
-            return True
-        if isinstance(v, float) and pd.isna(v):
-            return True
-        if isinstance(v, str) and v.strip() in ("", "-", "—", "N/A", "n/a"):
-            return True
-        return False
-
-    def _eps_to_float(v: Any) -> float | None:
-        if _eps_cell_missing(v):
-            return None
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return None
-
     by_period: dict[str, dict[str, Any]] = {}
     for idx, row in df.iterrows():
         ann = pd.Timestamp(idx)
         period_end = _quarter_end_before_announcement(ann)
         period_str = period_end.isoformat()
 
-        rep = _col(row, "Reported EPS", "ReportedEPS")
-        est = _col(row, "EPS Estimate", "EPSEstimate")
-        sur = _col(row, "Surprise(%)", "Surprise (%)", "Surprise(%)")
+        rep = _calendar_html_column(row, "Reported EPS", "ReportedEPS")
+        est = _calendar_html_column(row, "EPS Estimate", "EPSEstimate")
+        sur = _calendar_html_column(row, "Surprise(%)", "Surprise (%)", "Surprise(%)")
 
-        actual = _eps_to_float(rep)
-        estimate = _eps_to_float(est)
+        actual = _calendar_eps_to_float(rep)
+        estimate = _calendar_eps_to_float(est)
         # Historical rows always had reported EPS; we also need **upcoming** rows (estimate only)
         # so inference can find a quarter without ``actual`` (see ``find_upcoming_earnings_index``).
         if actual is None and estimate is None:
@@ -267,6 +283,11 @@ def yfinance_earnings_calendar_rows(yf_ticker: str, ticker: str, *, limit: int =
             "_source": "yfinance_earnings_calendar",
         }
     return list(by_period.values())
+
+
+# ---------------------------------------------------------------------------
+# Normalized earnings frame (shared by ingestion CLI and inference refresh)
+# ---------------------------------------------------------------------------
 
 
 def normalize_earnings_rows(rows: list[dict[str, Any]] | None) -> pd.DataFrame:
@@ -319,6 +340,11 @@ def normalize_earnings_rows(rows: list[dict[str, Any]] | None) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------------------
+# Finnhub news (feature pipeline / sentiment)
+# ---------------------------------------------------------------------------
+
+
 def fetch_company_news_range(
     client: finnhub.Client,
     symbol: str,
@@ -340,6 +366,11 @@ def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# CLI: one ticker and orchestration
+# ---------------------------------------------------------------------------
 
 
 def _ingest_yfinance(

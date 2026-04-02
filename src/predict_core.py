@@ -27,6 +27,7 @@ from src.errors import (
 from src.features import (
     build_upcoming_inference_row,
     prepare_prices_df,
+    sort_earnings_by_period,
     surprise_label,
 )
 from src.ingestion import (
@@ -130,6 +131,18 @@ def _price_history_for_chart(prices: pd.DataFrame, *, calendar_days: int = 90) -
     return out
 
 
+def _apply_yahoo_earnings_supplement(ticker: str, earnings_df: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
+    """Merge Yahoo ``earnings_history`` then calendar (Finnhub-preferred on period overlap; same as ingestion)."""
+    cal_limit = int(cfg.get("ingestion", {}).get("yfinance_earnings_calendar_limit", 100))
+    yf_sym = yfinance_symbol(ticker)
+    rows_in = earnings_df.to_dict("records")
+    yf_hist = yfinance_earnings_history_rows(yf_sym, ticker)
+    merged = merge_earnings_by_period(rows_in, yf_hist)
+    yf_cal = yfinance_earnings_calendar_rows(yf_sym, ticker, limit=cal_limit)
+    merged = merge_earnings_by_period(merged, yf_cal)
+    return normalize_earnings_rows(merged)
+
+
 def try_load_prediction_context(
     ticker: str,
     cfg: dict[str, Any],
@@ -159,16 +172,8 @@ def try_load_prediction_context(
 
     ig = cfg.get("ingestion", {})
     if ig.get("yfinance_earnings_backfill", True):
-        cal_limit = int(ig.get("yfinance_earnings_calendar_limit", 100))
-        yf_sym = yfinance_symbol(ticker)
         try:
-            # Match ingestion: earnings_history then calendar (both add quarters Finnhub may omit).
-            rows_in = earnings_df.to_dict("records")
-            yf_hist = yfinance_earnings_history_rows(yf_sym, ticker)
-            merged = merge_earnings_by_period(rows_in, yf_hist)
-            yf_cal = yfinance_earnings_calendar_rows(yf_sym, ticker, limit=cal_limit)
-            merged = merge_earnings_by_period(merged, yf_cal)
-            earnings_df = normalize_earnings_rows(merged)
+            earnings_df = _apply_yahoo_earnings_supplement(ticker, earnings_df, cfg)
             logger.info(
                 "%s earnings at predict: %d rows after Yahoo merge (history + calendar)",
                 ticker,
@@ -249,9 +254,7 @@ def _last_quarters_table(
     max_rows: int = 4,
 ) -> list[dict[str, Any]]:
     """Most recent completed quarters before the upcoming row."""
-    e = earnings.copy()
-    e["_pit_order"] = pd.to_datetime(e["period"], errors="coerce")
-    e = e.sort_values("_pit_order", ascending=True).drop(columns=["_pit_order"]).reset_index(drop=True)
+    e = sort_earnings_by_period(earnings)
     start = max(0, upcoming_idx - max_rows)
     slice_ = e.iloc[start:upcoming_idx]
     rows: list[dict[str, Any]] = []

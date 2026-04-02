@@ -1,7 +1,5 @@
 """Lightweight exceptions shared by API and inference (no heavy imports)."""
 
-from typing import Optional
-
 # Stable codes for API responses and logs (see ``build_upcoming_inference_row``).
 REASON_MISSING_PROCESSED_DATA = "missing_processed_data"
 REASON_SHORT_HISTORY = "short_history"
@@ -24,6 +22,6 @@ REASON_DETAIL_MESSAGES: dict[str, str] = {
 class InsufficientHistoryError(Exception):
     """Raised when processed data does not support an upcoming-quarter prediction."""
 
-    def __init__(self, message: str, *, reason_code: Optional[str] = None):
+    def __init__(self, message: str, *, reason_code: str | None = None):
         super().__init__(message)
         self.reason_code = reason_code
