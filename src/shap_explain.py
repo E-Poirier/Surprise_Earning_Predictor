@@ -1,4 +1,8 @@
-"""TreeSHAP helpers for multiclass XGBoost (margin space)."""
+"""TreeSHAP helpers for multiclass XGBoost (margin / logit space).
+
+``shap`` is imported lazily inside :func:`make_tree_explainer` so environments
+without SHAP still run training and inference; explanations are optional.
+"""
 
 from __future__ import annotations
 
@@ -31,7 +35,10 @@ def build_shap_explanation(
     *,
     top_n: int = 12,
 ) -> dict[str, Any] | None:
-    """Per-instance SHAP for the predicted class; top-|shap| rows plus optional *Other* bucket."""
+    """Per-instance SHAP for the predicted class; top-|shap| rows plus optional *Other* bucket.
+
+    Handles SHAP outputs as a per-class list, a 3D array (XGBoost multiclass), or 2D array.
+    """
     if explainer is None:
         return None
     try:

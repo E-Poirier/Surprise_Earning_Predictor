@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 _FISCAL_RE = re.compile(r"^(\d{4})-Q([1-4])$")
 
+# ---------------------------------------------------------------------------
+# Metadata JSON & XGBoost import (platform-specific hints on failure)
+# ---------------------------------------------------------------------------
+
 
 def _json_safe(obj: Any) -> Any:
     """Recursively convert numpy scalars / arrays for ``json.dump``."""
@@ -90,6 +94,10 @@ BASE_FEATURE_COLS = [
 ]
 
 TUNE_PARAM_KEYS = ("max_depth", "n_estimators", "learning_rate", "min_child_weight")
+
+# ---------------------------------------------------------------------------
+# Fiscal labels & time-based train / validation / test assignment
+# ---------------------------------------------------------------------------
 
 
 def parse_fiscal_label(s: str) -> tuple[int, int] | None:
@@ -148,6 +156,11 @@ def feature_columns_for_df(df: pd.DataFrame) -> list[str]:
         )
     sector_cols = sorted(c for c in df.columns if c.startswith("sector_"))
     return list(BASE_FEATURE_COLS) + sector_cols
+
+
+# ---------------------------------------------------------------------------
+# XGBoost: fit with early stopping; optional validation grid search
+# ---------------------------------------------------------------------------
 
 
 def _fit_xgb(
@@ -225,6 +238,11 @@ def _grid_search_xgb(
     _fit_xgb(final, X_train, y_train, sample_weight, X_val, y_val)
     results.sort(key=lambda r: r["val_macro_f1"], reverse=True)
     return final, best_merged, best_score, results
+
+
+# ---------------------------------------------------------------------------
+# End-to-end training run (load parquet → split → fit → save artifacts)
+# ---------------------------------------------------------------------------
 
 
 def run_training(
@@ -404,6 +422,11 @@ def run_training(
     logger.info("Saved metadata to %s", metadata_path)
 
     return metadata
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:

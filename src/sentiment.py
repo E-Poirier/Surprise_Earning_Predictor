@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 # FinBERT / BERT-style models: avoid pathological headline lengths
 _MAX_HEADLINE_CHARS = 2000
 
+# ---------------------------------------------------------------------------
+# Cache keys & HF classification output parsing
+# ---------------------------------------------------------------------------
+
 
 def headline_cache_key(text: str) -> str:
     """Stable cache key: hex ``md5`` of UTF-8 trimmed headline."""
@@ -105,6 +109,11 @@ def _should_retry_inference(exc: BaseException) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# On-disk score cache (md5 headline → positive probability)
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class SentimentCache:
     """JSON file cache: ``{ md5_hex: float_positive_score }``."""
@@ -140,6 +149,11 @@ class SentimentCache:
             json.dump(self.data, f, indent=2, sort_keys=True)
 
 
+# ---------------------------------------------------------------------------
+# Hugging Face Inference API client (FinBERT)
+# ---------------------------------------------------------------------------
+
+
 def build_inference_client(cfg: dict[str, Any] | None = None) -> Any:
     """``InferenceClient`` + ``HF_API_KEY``. Provider from ``sentiment.hf_provider`` (default ``auto``).
 
@@ -160,6 +174,11 @@ def build_inference_client(cfg: dict[str, Any] | None = None) -> Any:
     if p in ("auto", "", "none", "default"):
         return InferenceClient(model_id, token=token)
     return InferenceClient(model_id, token=token, provider=p)
+
+
+# ---------------------------------------------------------------------------
+# Finnhub news → headline strings (point-in-time window before earnings)
+# ---------------------------------------------------------------------------
 
 
 def earnings_news_window_dates(
@@ -203,6 +222,11 @@ def headlines_from_finnhub_news(
                 if t:
                     out.append(t)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Per-headline and aggregate sentiment (retries, cache, neutral fallback)
+# ---------------------------------------------------------------------------
 
 
 def score_headline(
@@ -290,6 +314,11 @@ def aggregate_sentiment(
 
     scores = [score_headline(h, client=client, cache=cache, cfg=cfg) for h in cleaned]
     return sum(scores) / len(scores)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:

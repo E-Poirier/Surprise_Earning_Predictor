@@ -1,7 +1,8 @@
-"""Load trained model and build features for one ticker (used by API).
+"""Public inference entrypoint used by the API (thin wrapper).
 
-Implementation lives in :mod:`src.predict_core` so tests can mock
-``predict_for_ticker`` without importing Finnhub/yfinance/pandas first.
+Heavy dependencies (pandas, Finnhub, Yahoo, HF) load only when
+:func:`predict_for_ticker` runs. Implementation is in :mod:`src.predict_core` so
+tests can mock ``predict_for_ticker`` without pulling those imports.
 """
 
 from __future__ import annotations
