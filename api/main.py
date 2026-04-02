@@ -25,6 +25,10 @@ from src.shap_explain import make_tree_explainer
 
 _TICKER_SET = {t.upper() for t in TICKERS}
 
+# ---------------------------------------------------------------------------
+# App factory & startup
+# ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,6 +50,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Earnings Surprise Predictor", lifespan=lifespan)
 
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
 
 def _require_api_key(x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None) -> bool:
     expected = os.environ.get("API_KEY")
@@ -54,6 +62,11 @@ def _require_api_key(x_api_key: Annotated[str | None, Header(alias="x-api-key")]
     if not x_api_key or x_api_key != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/health", response_model=HealthResponse)
